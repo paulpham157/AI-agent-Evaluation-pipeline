@@ -24,6 +24,18 @@ sys.path.insert(0, str(_ROOT))
 
 import gradio as gr
 
+from scripts.generate_golden_dataset import (
+    DATASET_REPO,
+    DOMAIN_LABELS,
+    GENERATOR_MODEL,
+    SCENARIOS,
+    build_templates,
+    call_model,
+    make_prompt,
+    parse_output,
+    upload_to_hf,
+    validate,
+)
 from src.evaluators import (
     ALL_EVALUATORS,
     DEFAULT_TRACE_EVALS,
@@ -192,6 +204,106 @@ def parse_and_preview(trace_json: str) -> str:
         return format_trace_tree(session)
     except Exception as e:
         return f"❌ **Parse error:** `{e}`\n\nCheck that your JSON is valid and contains `user_goal` + `traces`."
+
+
+# ─── Dataset generation function ───────────────────────────────────────────────
+
+
+def run_dataset_generation(domains: list, n_per_domain: int, hf_token: str):
+    """Gradio generator: yields (status_html, log_text) as generation progresses."""
+    import json
+    import time
+    from pathlib import Path
+
+    from huggingface_hub import InferenceClient
+
+    output_path = _ROOT / "dataset" / "golden_dataset.jsonl"
+    output_path.parent.mkdir(exist_ok=True)
+
+    if not domains:
+        yield (
+            "<div style='color:#FF9800;padding:16px;'>⚠️ Select at least one domain.</div>",
+            "",
+        )
+        return
+
+    templates = build_templates(domains, int(n_per_domain))
+    total = len(templates)
+    log_lines = []
+
+    def status_html(done, failed, total):
+        pct = int(done / total * 100) if total else 0
+        color = "#4CAF50" if failed == 0 else "#FF9800"
+        return (
+            f"<div style='padding:14px;background:rgba(255,255,255,0.05);border-radius:8px;'>"
+            f"<div style='font-size:13px;color:#aaa;margin-bottom:6px;'>"
+            f"✅ {done} done &nbsp;·&nbsp; ✗ {failed} failed &nbsp;·&nbsp; {total} total</div>"
+            f"<div style='background:rgba(255,255,255,0.1);border-radius:3px;height:6px;'>"
+            f"<div style='background:{color};height:6px;border-radius:3px;width:{pct}%;'></div>"
+            f"</div></div>"
+        )
+
+    # Load already-generated IDs
+    existing_ids = set()
+    if output_path.exists():
+        with open(output_path) as f:
+            for line in f:
+                existing_ids.add(json.loads(line)["id"])
+
+    pending = [t for t in templates if t["id"] not in existing_ids]
+    already_done = len(existing_ids)
+
+    if not pending:
+        yield status_html(already_done, 0, total), "All records already generated."
+        return
+
+    log_lines.append(f"Model: {GENERATOR_MODEL}")
+    log_lines.append(f"Total: {total} records  |  Pending: {len(pending)}")
+    log_lines.append("=" * 45)
+    yield status_html(already_done, 0, total), "\n".join(log_lines)
+
+    token = hf_token.strip() or None
+    client = InferenceClient(model=GENERATOR_MODEL, token=token)
+
+    done, failed = already_done, 0
+    with open(output_path, "a", encoding="utf-8") as f:
+        for t in pending:
+            log_lines.append(f"⏳ {t['id']} ({t['domain']}/{t['difficulty']})...")
+            yield status_html(done, failed, total), "\n".join(log_lines)
+
+            rec = call_model(client, t)
+            if rec:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.flush()
+                done += 1
+                log_lines[-1] = f"✅ {t['id']} ({t['domain']}/{t['difficulty']})"
+            else:
+                failed += 1
+                log_lines[-1] = f"✗  {t['id']} — parse failed"
+
+            yield status_html(done, failed, total), "\n".join(log_lines)
+            time.sleep(0.3)
+
+    # Upload to HF
+    log_lines.append("")
+    log_lines.append("📤 Uploading to HuggingFace dataset repo...")
+    yield status_html(done, failed, total), "\n".join(log_lines)
+    try:
+        upload_to_hf(output_path, hf_token=token)
+        log_lines.append(f"✓ Uploaded → {DATASET_REPO}")
+    except Exception as e:
+        log_lines.append(f"✗ Upload failed: {e}")
+
+    final_html = (
+        f"<div style='padding:14px;background:rgba(76,175,80,0.1);"
+        f"border-radius:8px;border:1px solid #4CAF50;'>"
+        f"<div style='color:#4CAF50;font-weight:700;font-size:15px;'>✅ Generation complete</div>"
+        f"<div style='color:#ccc;font-size:12px;margin-top:4px;'>"
+        f"{done} records &nbsp;·&nbsp; {failed} failed &nbsp;·&nbsp; "
+        f"<a href='https://huggingface.co/datasets/{DATASET_REPO}' target='_blank' "
+        f"style='color:#63B3ED;'>View dataset →</a></div></div>"
+    )
+    yield final_html, "\n".join(log_lines)
 
 
 # ─── Main evaluation function ────────────────────────────────────────────────
@@ -586,7 +698,51 @@ with gr.Blocks(
 
             score_cards_html = gr.HTML("")
 
-    # ── Tab 4: About ──────────────────────────────────────────────────────
+        # ── Tab 4: Dataset Generator ──────────────────────────────────────
+        with gr.Tab("🗂️ Dataset"):
+            gr.Markdown("### Generate Golden Dataset")
+            gr.Markdown(
+                f"Generates **(input, expected_output)** pairs for tech interview evaluation. "
+                f"Uses `{GENERATOR_MODEL}`. "
+                f"Results auto-uploaded to `{DATASET_REPO}`."
+            )
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    domain_select = gr.CheckboxGroup(
+                        choices=[(v, k) for k, v in DOMAIN_LABELS.items()],
+                        value=list(DOMAIN_LABELS.keys()),
+                        label="Domains",
+                    )
+                    records_slider = gr.Slider(
+                        minimum=1,
+                        maximum=5,
+                        value=3,
+                        step=1,
+                        label="Records per domain",
+                    )
+                    hf_token_gen = gr.Textbox(
+                        label="HF Token (requires Nemotron access)",
+                        type="password",
+                        placeholder="hf_...",
+                    )
+                    gen_btn = gr.Button(
+                        "🚀 Generate & Upload Dataset", variant="primary", size="lg"
+                    )
+
+                with gr.Column(scale=1):
+                    gen_status = gr.HTML(
+                        "<div style='color:#888;padding:20px;text-align:center;'>"
+                        "Configure and click Generate to start.</div>"
+                    )
+                    gen_log = gr.Textbox(
+                        label="Progress",
+                        lines=14,
+                        interactive=False,
+                        show_copy_button=True,
+                    )
+
+    # ── Tab 5: About ──────────────────────────────────────────────────────────
     with gr.Tabs():
         with gr.Tab("ℹ️ About"):
             gr.Markdown(_HOW_IT_WORKS)
@@ -619,7 +775,14 @@ with gr.Blocks(
 - [ ] Dataset management for regression testing
             """)
 
-    # ── Wire up Run button ────────────────────────────────────────────────
+    # ── Wire: Dataset generator ─────────────────────────────────────────────────
+    gen_btn.click(
+        fn=run_dataset_generation,
+        inputs=[domain_select, records_slider, hf_token_gen],
+        outputs=[gen_status, gen_log],
+    )
+
+    # ── Wire: Eval runner ──────────────────────────────────────────────────────
     run_btn.click(
         fn=run_evaluation,
         inputs=[
