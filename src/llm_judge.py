@@ -34,7 +34,7 @@ class LLMJudge:
         Request timeout in seconds (default 90 — QwQ reasons before answering).
     """
 
-    DEFAULT_MODEL = "Qwen/QwQ-32B"
+    DEFAULT_MODEL = "Qwen/Qwen3.6-27B"
 
     def __init__(
         self,
