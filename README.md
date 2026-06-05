@@ -195,14 +195,20 @@ demos/
 
 ## Roadmap
 
-- [x] **MVP Gradio UI** (`app.py`) — 14 evaluators, Session/Trace/Span levels, 3 demo traces
-- [x] **Agent Wrapper** (`src/wrapper.py`) — SessionTracer + trace_agent decorator
-- [x] **REST API** (`api.py`) — FastAPI with `/evaluate`, `/evaluate/quick`, `/evaluators`
-- [x] **LLM-as-Judge** (`src/llm_judge.py`) — Qwen/QwQ-32B via HF Inference API
-- [x] **Deployed** — HuggingFace Spaces `build-small-hackathon/AI-agent-Evaluation-pipeline`
-- [ ] pass@k / pass^k reliability metrics
+### ✅ MVP Complete
+
+- [x] **Gradio UI** — 14 evaluators, Session / Trace / Span levels, 3 demo traces
+- [x] **Agent Wrapper** (`src/wrapper.py`) — `SessionTracer` + `trace_agent` decorator
+- [x] **REST API** (`api.py`) — `POST /evaluate`, `POST /evaluate/quick`, `GET /evaluators`
+- [x] **LLM-as-Judge** (`src/llm_judge.py`) — `Qwen/Qwen3.6-27B` via HF Inference API
+- [x] **pass@k / pass^k** (`src/reliability.py`) — multi-trial reliability metrics
+- [x] **Golden Dataset Generator** — Nemotron-3-Nano-30B, 8 tech interview domains
+- [x] **Deployed** — `build-small-hackathon/AI-agent-Evaluation-pipeline`
+
+### 📋 Future (post-MVP)
+
 - [ ] Export results as JSON / CSV
-- [ ] Custom evaluator builder
+- [ ] Custom evaluator builder (user-defined prompt templates)
 - [ ] Dataset management for regression testing
 - [ ] Online monitoring mode
 
