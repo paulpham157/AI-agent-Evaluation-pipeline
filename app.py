@@ -31,6 +31,7 @@ from src.evaluators import (
     SPAN_EVALUATORS,
     TRACE_EVALUATORS,
 )
+from src.llm_judge import LLMJudge
 from src.models import EvalLevel, EvalMode, GroundTruth
 from src.parser import format_trace_tree, parse_trace
 from src.runner import EvalRunner
@@ -205,6 +206,8 @@ def run_evaluation(
     sel_trace: list,
     sel_span: list,
     threshold: float,
+    eval_mode_radio: str,
+    hf_token: str,
     exp_response: str,
     exp_trajectory: str,
     assertions_text: str,
@@ -248,14 +251,26 @@ def run_evaluation(
         warn = "<div style='color:#FF9800;padding:20px;'>⚠️ No evaluators selected — please enable at least one level.</div>"
         return warn, None, None, None, warn
 
-    # ── 4. Run evaluation ─────────────────────────────────────────────────
+    # ── 4. Build LLM judge (if requested) ────────────────────────────────
+    use_llm = eval_mode_radio == "LLM Judge (QwQ-32B)"
+    mode = EvalMode.LLM if use_llm else EvalMode.HEURISTIC
+    judge = None
+    if use_llm:
+        token = hf_token.strip() or None
+        judge = LLMJudge(api_key=token)
+        if not judge.available:
+            warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM mode selected but no HF Token provided — falling back to heuritic.</div>"
+            mode = EvalMode.HEURISTIC
+
+    # ── 5. Run evaluation ──────────────────────────────────────────────────
     progress(0.15, desc="Running session evaluators…")
     runner = EvalRunner(
         selected_session_evals=sess_evals,
         selected_trace_evals=trace_evals,
         selected_span_evals=span_evals,
         threshold=threshold,
-        mode=EvalMode.HEURISTIC,
+        mode=mode,
+        llm_judge=judge,
     )
     progress(0.40, desc="Running trace evaluators…")
     report = runner.run(session, gt)
@@ -473,6 +488,25 @@ with gr.Blocks(
                         label="🔧 Span Level (tool calls)", value=True
                     )
 
+                    gr.Markdown("**🤖 Evaluation Mode**")
+                    eval_mode_radio = gr.Radio(
+                        choices=["Heuristic (offline)", "LLM Judge (QwQ-32B)"],
+                        value="Heuristic (offline)",
+                        label="",
+                        info="LLM mode requires a HuggingFace token with QwQ-32B access",
+                    )
+                    hf_token = gr.Textbox(
+                        label="HF Token",
+                        placeholder="hf_...",
+                        type="password",
+                        visible=False,
+                    )
+                    eval_mode_radio.change(
+                        fn=lambda m: gr.update(visible=(m == "LLM Judge (QwQ-32B)")),
+                        inputs=eval_mode_radio,
+                        outputs=hf_token,
+                    )
+
                     gr.Markdown("**Pass Threshold**")
                     threshold = gr.Slider(
                         minimum=0.30,
@@ -597,6 +631,8 @@ with gr.Blocks(
             sel_trace,
             sel_span,
             threshold,
+            eval_mode_radio,
+            hf_token,
             exp_response,
             exp_trajectory,
             assertions_text,
