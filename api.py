@@ -36,6 +36,7 @@ from src.evaluators import (
     SPAN_EVALUATORS,
     TRACE_EVALUATORS,
 )
+from src.llm_judge import LLMJudge
 from src.models import EvalMode, GroundTruth
 from src.parser import parse_trace
 from src.runner import EvalRunner
@@ -79,6 +80,10 @@ class GroundTruthInput(BaseModel):
 
 
 class EvaluateRequest(BaseModel):
+    hf_token: Optional[str] = Field(
+        None, description="HuggingFace token for LLM judge mode"
+    )
+    mode: str = Field("heuristic", description="Evaluation mode: 'heuristic' or 'llm'")
     trace: Dict[str, Any] = Field(
         ...,
         description="Agent session trace in pipeline JSON format",
@@ -262,12 +267,24 @@ def evaluate(req: EvaluateRequest):
             assertions=req.ground_truth.assertions,
         )
 
+    mode = EvalMode.LLM if req.mode == "llm" else EvalMode.HEURISTIC
+    judge = None
+    if mode == EvalMode.LLM:
+        token = req.hf_token or os.getenv("HF_TOKEN", "")
+        judge = LLMJudge(api_key=token)
+        if not judge.available:
+            raise HTTPException(
+                status_code=422,
+                detail="LLM mode requires hf_token or HF_TOKEN env var.",
+            )
+
     runner = EvalRunner(
         selected_session_evals=req.session_evaluators,
         selected_trace_evals=req.trace_evaluators,
         selected_span_evals=req.span_evaluators,
         threshold=req.threshold,
-        mode=EvalMode.HEURISTIC,
+        mode=mode,
+        llm_judge=judge,
     )
     report = runner.run(session, gt)
     return _build_response(report, session.session_id)
