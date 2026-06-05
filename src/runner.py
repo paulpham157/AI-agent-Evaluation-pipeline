@@ -135,3 +135,12 @@ class EvalRunner:
             eval_mode=self.mode,
             elapsed_seconds=round(time.time() - start, 2),
         )
+
+    def run_k_trials(
+        self,
+        session: Session,
+        ground_truth: Optional[GroundTruth] = None,
+        k: int = 3,
+    ) -> list:
+        """Run k independent evaluation trials and return a list of EvalReports."""
+        return [self.run(session, ground_truth) for _ in range(k)]
