@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
 """
-Golden Dataset Generator
-========================
+Golden Dataset Generator — Tech Interview Domains
+==================================================
 Uses NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 to generate golden (input, expected_output)
-pairs for evaluating AI agents.
+pairs for evaluating AI agents conducting **tech job interviews**.
 
-Each record contains:
-  scenario   — user_goal + system_prompt + initial_message (what to give the agent)
-  ground_truth — expected_response + expected_trajectory + assertions (what to check against)
+Domains:
+  python_backend       — Python, FastAPI, async, OOP
+  system_design        — distributed systems, scalability, architecture
+  dsa                  — data structures, algorithms, LeetCode-style
+  database             — SQL, NoSQL, indexing, schema design
+  devops_cloud         — Docker, Kubernetes, CI/CD, AWS/GCP
+  machine_learning     — ML concepts, model evaluation, debugging
+  javascript_frontend  — React, TypeScript, Node.js, browser APIs
+  behavioral_tech      — STAR method behavioral questions for tech roles
 
 Usage:
     python scripts/generate_golden_dataset.py
-    python scripts/generate_golden_dataset.py --limit 5   # generate only 5 records
-    python scripts/generate_golden_dataset.py --dry-run   # print prompts, no API calls
+    python scripts/generate_golden_dataset.py --domains python_backend system_design
+    python scripts/generate_golden_dataset.py --records-per-domain 3
+    python scripts/generate_golden_dataset.py --dry-run
 """
 
 import argparse
 import json
-import os
 import re
 import sys
 import time
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -28,328 +35,352 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 GENERATOR_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+DATASET_REPO = "build-small-hackathon/agent-eval-golden-dataset"
 OUTPUT_FILE = Path(__file__).parent.parent / "dataset" / "golden_dataset.jsonl"
 
-# ── Scenario templates ────────────────────────────────────────────────────────
-# Each template drives one generation call to Nemotron.
+# ── Tech Interview Scenario Templates ────────────────────────────────────────
 
-SCENARIO_TEMPLATES = [
-    # ── TRAVEL ──────────────────────────────────────────────────────────────
-    {
-        "id": "travel_001",
-        "domain": "travel",
-        "difficulty": "easy",
-        "agent_role": "travel assistant with tools: search_flights, get_prices",
-        "situation": "User wants to find the cheapest flight from Hanoi to Ho Chi Minh City next weekend.",
-        "has_tools": True,
-    },
-    {
-        "id": "travel_002",
-        "domain": "travel",
-        "difficulty": "medium",
-        "agent_role": "travel assistant with tools: search_flights, book_flight, check_baggage_policy",
-        "situation": "User needs to book a round-trip business class flight NYC→Tokyo for a conference, with specific dates and a budget limit.",
-        "has_tools": True,
-    },
-    {
-        "id": "travel_003",
-        "domain": "travel",
-        "difficulty": "hard",
-        "agent_role": "travel assistant with tools: search_flights, search_hotels, check_visa_requirements, book_flight, book_hotel",
-        "situation": "User is planning a 2-week trip to Japan in cherry blossom season. They need flights, hotels near train stations, and visa info for a US passport holder.",
-        "has_tools": True,
-    },
-    {
-        "id": "travel_004",
-        "domain": "travel",
-        "difficulty": "easy",
-        "agent_role": "travel assistant (no tools, knowledge-based)",
-        "situation": "User asks for packing tips for a beach vacation in Thailand in July.",
-        "has_tools": False,
-    },
-    {
-        "id": "travel_005",
-        "domain": "travel",
-        "difficulty": "medium",
-        "agent_role": "travel assistant with tools: search_hotels, check_availability, make_reservation",
-        "situation": "User wants to book a pet-friendly hotel in Paris for 3 nights, needs to bring a medium-sized dog.",
-        "has_tools": True,
-    },
-    # ── RESTAURANT ───────────────────────────────────────────────────────────
-    {
-        "id": "restaurant_001",
-        "domain": "restaurant",
-        "difficulty": "easy",
-        "agent_role": "restaurant concierge with tools: search_restaurants, check_availability",
-        "situation": "User wants a good sushi restaurant in downtown San Francisco open tonight.",
-        "has_tools": True,
-    },
-    {
-        "id": "restaurant_002",
-        "domain": "restaurant",
-        "difficulty": "medium",
-        "agent_role": "restaurant concierge with tools: search_restaurants, check_availability, make_reservation",
-        "situation": "User wants to book a romantic Italian restaurant for an anniversary dinner for 2 in NYC. Budget is $$$ and they need a table with a view.",
-        "has_tools": True,
-    },
-    {
-        "id": "restaurant_003",
-        "domain": "restaurant",
-        "difficulty": "hard",
-        "agent_role": "restaurant concierge with tools: search_restaurants, check_availability, make_reservation, get_menu",
-        "situation": "User is organizing a group dinner for 12 people with mixed dietary restrictions: 3 vegans, 2 gluten-free, 1 nut allergy. Needs a restaurant that can accommodate all.",
-        "has_tools": True,
-    },
-    {
-        "id": "restaurant_004",
-        "domain": "restaurant",
-        "difficulty": "easy",
-        "agent_role": "restaurant concierge (knowledge-based, no tools)",
-        "situation": "User asks what are the must-try dishes in Vietnamese cuisine for a first-time visitor.",
-        "has_tools": False,
-    },
-    {
-        "id": "restaurant_005",
-        "domain": "restaurant",
-        "difficulty": "medium",
-        "agent_role": "restaurant concierge with tools: search_restaurants, make_reservation",
-        "situation": "User wants a business lunch venue with private dining room in London, near Bank station. Party of 8, needs AV equipment.",
-        "has_tools": True,
-    },
-    # ── CUSTOMER SUPPORT ─────────────────────────────────────────────────────
-    {
-        "id": "support_001",
-        "domain": "customer_support",
-        "difficulty": "easy",
-        "agent_role": "customer support agent with tools: lookup_order, get_refund_policy",
-        "situation": "Customer received damaged product (headphones) and wants to know the return process.",
-        "has_tools": True,
-    },
-    {
-        "id": "support_002",
-        "domain": "customer_support",
-        "difficulty": "medium",
-        "agent_role": "customer support agent with tools: lookup_order, initiate_refund, track_shipment",
-        "situation": "Customer's package was marked delivered but never arrived. They need a replacement or refund within 2 days for a birthday gift.",
-        "has_tools": True,
-    },
-    {
-        "id": "support_003",
-        "domain": "customer_support",
-        "difficulty": "hard",
-        "agent_role": "customer support agent with tools: lookup_order, lookup_account, escalate_ticket, initiate_refund, apply_coupon",
-        "situation": "Long-time customer is threatening to cancel their premium subscription after 3 issues in the past month: a failed delivery, an overcharge, and a broken item. Needs to be retained.",
-        "has_tools": True,
-    },
-    {
-        "id": "support_004",
-        "domain": "customer_support",
-        "difficulty": "easy",
-        "agent_role": "customer support agent (knowledge-based)",
-        "situation": "Customer wants to know how to reset their password and enable two-factor authentication.",
-        "has_tools": False,
-    },
-    {
-        "id": "support_005",
-        "domain": "customer_support",
-        "difficulty": "medium",
-        "agent_role": "customer support agent with tools: check_warranty, create_repair_ticket, schedule_technician",
-        "situation": "Customer's 14-month-old washing machine (1-year warranty) stopped working. They want a repair or replacement.",
-        "has_tools": True,
-    },
-    # ── TECHNICAL QA / CODING ────────────────────────────────────────────────
-    {
-        "id": "tech_001",
-        "domain": "technical_qa",
-        "difficulty": "easy",
-        "agent_role": "coding assistant (no tools, knowledge-based)",
-        "situation": "Junior developer asks how to reverse a string in Python and what are 2-3 different ways to do it.",
-        "has_tools": False,
-    },
-    {
-        "id": "tech_002",
-        "domain": "technical_qa",
-        "difficulty": "medium",
-        "agent_role": "coding assistant with tools: run_code, search_docs",
-        "situation": "Developer has a bug: their async Python function using asyncio is blocking the event loop. They share a code snippet and need it fixed.",
-        "has_tools": True,
-    },
-    {
-        "id": "tech_003",
-        "domain": "technical_qa",
-        "difficulty": "hard",
-        "agent_role": "senior software architect (knowledge-based)",
-        "situation": "Engineer asks how to design a distributed rate limiter for a microservices API that handles 100k requests/second with Redis.",
-        "has_tools": False,
-    },
-    {
-        "id": "tech_004",
-        "domain": "technical_qa",
-        "difficulty": "medium",
-        "agent_role": "DevOps assistant with tools: run_command, check_logs, search_docs",
-        "situation": "User's Docker container keeps restarting. They need help diagnosing the issue from the logs and fixing the Dockerfile.",
-        "has_tools": True,
-    },
-    {
-        "id": "tech_005",
-        "domain": "technical_qa",
-        "difficulty": "easy",
-        "agent_role": "SQL tutor (knowledge-based)",
-        "situation": "Data analyst asks for help writing a SQL query to find the top 5 customers by revenue in the last 30 days, with their total orders count.",
-        "has_tools": False,
-    },
-    # ── RESEARCH / RAG ───────────────────────────────────────────────────────
-    {
-        "id": "research_001",
-        "domain": "research",
-        "difficulty": "easy",
-        "agent_role": "research assistant with tools: web_search, summarize",
-        "situation": "Student asks for a summary of the key differences between supervised, unsupervised, and reinforcement learning.",
-        "has_tools": True,
-    },
-    {
-        "id": "research_002",
-        "domain": "research",
-        "difficulty": "medium",
-        "agent_role": "research assistant with tools: search_papers, read_paper, synthesize",
-        "situation": "Researcher wants a comparison of the latest LLM evaluation benchmarks (MMLU, HellaSwag, HumanEval) and their limitations.",
-        "has_tools": True,
-    },
-    {
-        "id": "research_003",
-        "domain": "research",
-        "difficulty": "hard",
-        "agent_role": "market research analyst with tools: search_web, get_financial_data, analyze_trends",
-        "situation": "Startup founder needs a competitive analysis of the top 5 AI coding assistants (GitHub Copilot, Cursor, etc.) including pricing, features, and market share.",
-        "has_tools": True,
-    },
-    {
-        "id": "research_004",
-        "domain": "research",
-        "difficulty": "easy",
-        "agent_role": "research assistant (knowledge-based)",
-        "situation": "User asks to explain the concept of RAG (Retrieval Augmented Generation) in simple terms with a real-world example.",
-        "has_tools": False,
-    },
-    {
-        "id": "research_005",
-        "domain": "research",
-        "difficulty": "medium",
-        "agent_role": "research assistant with tools: search_web, read_article, fact_check",
-        "situation": "Journalist needs to fact-check 3 specific claims about AI job displacement statistics before publishing an article.",
-        "has_tools": True,
-    },
-    # ── MOCK INTERVIEW ───────────────────────────────────────────────────────
-    {
-        "id": "interview_001",
-        "domain": "mock_interview",
-        "difficulty": "easy",
-        "agent_role": "technical interviewer conducting a Python fundamentals screen",
-        "situation": "Candidate is a junior developer applying for a backend role. Interviewer should assess Python basics, OOP, and problem-solving.",
-        "has_tools": False,
-    },
-    {
-        "id": "interview_002",
-        "domain": "mock_interview",
-        "difficulty": "medium",
-        "agent_role": "system design interviewer with tools: draw_diagram, evaluate_answer",
-        "situation": "Senior engineer candidate is asked to design a URL shortener service (like bit.ly) that handles 1 billion URLs. Needs scalability discussion.",
-        "has_tools": True,
-    },
-    {
-        "id": "interview_003",
-        "domain": "mock_interview",
-        "difficulty": "hard",
-        "agent_role": "behavioral interviewer assessing leadership and conflict resolution",
-        "situation": "Candidate for engineering manager role. Interviewer uses STAR method to probe for examples of managing underperforming team members.",
-        "has_tools": False,
-    },
-    {
-        "id": "interview_004",
-        "domain": "mock_interview",
-        "difficulty": "medium",
-        "agent_role": "ML interviewer with tools: run_code, evaluate_model",
-        "situation": "ML engineer candidate is asked to explain, then implement, a simple gradient descent optimizer and discuss when to use Adam vs SGD.",
-        "has_tools": True,
-    },
-    {
-        "id": "interview_005",
-        "domain": "mock_interview",
-        "difficulty": "hard",
-        "agent_role": "comprehensive technical interviewer (DSA + system design)",
-        "situation": "FAANG-level interview: candidate must solve a LeetCode hard problem (LRU cache implementation) AND design a distributed cache after.",
-        "has_tools": False,
-    },
-]
+SCENARIOS = {
+    "python_backend": [
+        {
+            "id": "python_001",
+            "difficulty": "easy",
+            "situation": "Junior dev asks how to reverse a string in Python — explain 3 different approaches with time complexity.",
+            "has_tools": False,
+        },
+        {
+            "id": "python_002",
+            "difficulty": "medium",
+            "situation": "Candidate must implement a thread-safe LRU cache class in Python using OrderedDict and explain the design choices.",
+            "has_tools": False,
+        },
+        {
+            "id": "python_003",
+            "difficulty": "medium",
+            "situation": "Developer shares code where an async FastAPI endpoint blocks the event loop. Interviewer must identify and fix the issue.",
+            "has_tools": True,
+        },
+        {
+            "id": "python_004",
+            "difficulty": "hard",
+            "situation": "Design a Python decorator that implements rate limiting (N calls per second) with thread safety and expiry.",
+            "has_tools": False,
+        },
+        {
+            "id": "python_005",
+            "difficulty": "easy",
+            "situation": "Explain Python's GIL, when it matters, and demonstrate with an I/O-bound vs CPU-bound example.",
+            "has_tools": False,
+        },
+    ],
+    "system_design": [
+        {
+            "id": "sysdesign_001",
+            "difficulty": "easy",
+            "situation": "Design a URL shortener (like bit.ly) that handles 100M URLs. Cover storage, hashing, and redirect flow.",
+            "has_tools": False,
+        },
+        {
+            "id": "sysdesign_002",
+            "difficulty": "medium",
+            "situation": "Design a real-time leaderboard for a mobile game with 10M daily active users. Must support top-100 and user rank queries.",
+            "has_tools": False,
+        },
+        {
+            "id": "sysdesign_003",
+            "difficulty": "hard",
+            "situation": "Design a distributed rate limiter for a public API handling 100k requests/second across 5 data centers.",
+            "has_tools": False,
+        },
+        {
+            "id": "sysdesign_004",
+            "difficulty": "medium",
+            "situation": "Design a notification service (push, email, SMS) for 50M users with guaranteed delivery and deduplication.",
+            "has_tools": False,
+        },
+        {
+            "id": "sysdesign_005",
+            "difficulty": "hard",
+            "situation": "Design Twitter's home feed ranking system — real-time ingestion, personalized ranking, fan-out strategies.",
+            "has_tools": False,
+        },
+    ],
+    "dsa": [
+        {
+            "id": "dsa_001",
+            "difficulty": "easy",
+            "situation": "Find all duplicates in an integer array — explain and compare O(n²), O(n log n), and O(n) approaches.",
+            "has_tools": False,
+        },
+        {
+            "id": "dsa_002",
+            "difficulty": "medium",
+            "situation": "Implement a stack that supports push, pop, and getMin() all in O(1) time and space. Explain the invariant.",
+            "has_tools": False,
+        },
+        {
+            "id": "dsa_003",
+            "difficulty": "hard",
+            "situation": "Implement LRU Cache with get() and put() in O(1). Candidate must use doubly linked list + hashmap.",
+            "has_tools": False,
+        },
+        {
+            "id": "dsa_004",
+            "difficulty": "medium",
+            "situation": "Given a binary tree, write iterative in-order traversal without recursion. Explain the stack-based approach.",
+            "has_tools": False,
+        },
+        {
+            "id": "dsa_005",
+            "difficulty": "easy",
+            "situation": "Explain when to use BFS vs DFS with concrete examples. Implement BFS shortest path on an unweighted graph.",
+            "has_tools": False,
+        },
+    ],
+    "database": [
+        {
+            "id": "db_001",
+            "difficulty": "easy",
+            "situation": "Write SQL to find the top 5 customers by total revenue in the last 30 days, including their order count.",
+            "has_tools": False,
+        },
+        {
+            "id": "db_002",
+            "difficulty": "medium",
+            "situation": "Optimize a slow query joining orders, customers, and products tables that takes 8 seconds on 10M rows.",
+            "has_tools": True,
+        },
+        {
+            "id": "db_003",
+            "difficulty": "hard",
+            "situation": "Design a database schema for an e-commerce system supporting products, variants, inventory, orders, and reviews.",
+            "has_tools": False,
+        },
+        {
+            "id": "db_004",
+            "difficulty": "easy",
+            "situation": "Explain ACID properties with real-world examples of each. When would you relax consistency for availability?",
+            "has_tools": False,
+        },
+        {
+            "id": "db_005",
+            "difficulty": "medium",
+            "situation": "When to choose PostgreSQL vs MongoDB vs Redis — walk through 3 concrete scenarios justifying each choice.",
+            "has_tools": False,
+        },
+    ],
+    "devops_cloud": [
+        {
+            "id": "devops_001",
+            "difficulty": "easy",
+            "situation": "Write a production-ready Dockerfile for a Python FastAPI app with multi-stage build, non-root user, and health check.",
+            "has_tools": False,
+        },
+        {
+            "id": "devops_002",
+            "difficulty": "medium",
+            "situation": "A Kubernetes pod is in CrashLoopBackOff. Walk through the diagnostic steps using kubectl commands.",
+            "has_tools": True,
+        },
+        {
+            "id": "devops_003",
+            "difficulty": "hard",
+            "situation": "Design a CI/CD pipeline for a microservices app with 20 services — blue/green deploy, rollback, and canary releases.",
+            "has_tools": False,
+        },
+        {
+            "id": "devops_004",
+            "difficulty": "easy",
+            "situation": "Explain the difference between Docker containers and VMs. When would you choose one over the other?",
+            "has_tools": False,
+        },
+        {
+            "id": "devops_005",
+            "difficulty": "medium",
+            "situation": "Set up monitoring and alerting for a web service — define key SLIs/SLOs and implement with Prometheus + Grafana.",
+            "has_tools": False,
+        },
+    ],
+    "machine_learning": [
+        {
+            "id": "ml_001",
+            "difficulty": "easy",
+            "situation": "Explain overfitting, how to detect it from learning curves, and describe 4 regularization techniques.",
+            "has_tools": False,
+        },
+        {
+            "id": "ml_002",
+            "difficulty": "medium",
+            "situation": "A model has 99% training accuracy but 60% validation accuracy. Debug the issue and propose fixes.",
+            "has_tools": True,
+        },
+        {
+            "id": "ml_003",
+            "difficulty": "hard",
+            "situation": "Design an ML pipeline for real-time fraud detection: feature engineering, model selection, latency constraints, retraining.",
+            "has_tools": False,
+        },
+        {
+            "id": "ml_004",
+            "difficulty": "easy",
+            "situation": "Explain the bias-variance tradeoff and give examples of high-bias vs high-variance models.",
+            "has_tools": False,
+        },
+        {
+            "id": "ml_005",
+            "difficulty": "medium",
+            "situation": "Compare when to use gradient boosting (XGBoost) vs neural networks for tabular data. Walk through decision criteria.",
+            "has_tools": False,
+        },
+    ],
+    "javascript_frontend": [
+        {
+            "id": "js_001",
+            "difficulty": "easy",
+            "situation": "Explain JavaScript's event loop, call stack, and microtask queue. Predict output of a Promise + setTimeout snippet.",
+            "has_tools": False,
+        },
+        {
+            "id": "js_002",
+            "difficulty": "medium",
+            "situation": "A React component re-renders too frequently causing performance issues. Diagnose and fix using useMemo/useCallback.",
+            "has_tools": True,
+        },
+        {
+            "id": "js_003",
+            "difficulty": "hard",
+            "situation": "Design the frontend architecture for a large SPA — code splitting, state management, micro-frontends decision.",
+            "has_tools": False,
+        },
+        {
+            "id": "js_004",
+            "difficulty": "easy",
+            "situation": "Explain JavaScript closures with 3 practical use cases: counter, memoization, and partial application.",
+            "has_tools": False,
+        },
+        {
+            "id": "js_005",
+            "difficulty": "medium",
+            "situation": "Implement a debounce function in TypeScript with generics. Explain use cases vs throttle.",
+            "has_tools": False,
+        },
+    ],
+    "behavioral_tech": [
+        {
+            "id": "behavioral_001",
+            "difficulty": "easy",
+            "situation": "Using STAR method: 'Tell me about a time you had a technical disagreement with a senior engineer. How did it resolve?'",
+            "has_tools": False,
+        },
+        {
+            "id": "behavioral_002",
+            "difficulty": "medium",
+            "situation": "Using STAR method: 'Describe how you led a complex technical project under a tight deadline with incomplete requirements.'",
+            "has_tools": False,
+        },
+        {
+            "id": "behavioral_003",
+            "difficulty": "hard",
+            "situation": "Using STAR method: 'Tell me about a critical production incident you caused. Walk through your response and what you learned.'",
+            "has_tools": False,
+        },
+        {
+            "id": "behavioral_004",
+            "difficulty": "medium",
+            "situation": "Using STAR method: 'How have you mentored a struggling junior engineer? What was your approach and the outcome?'",
+            "has_tools": False,
+        },
+        {
+            "id": "behavioral_005",
+            "difficulty": "easy",
+            "situation": "Using STAR method: 'Describe your code review process. How do you give constructive feedback on bad code?'",
+            "has_tools": False,
+        },
+    ],
+}
 
-# ── Prompt template ──────────────────────────────────────────────────────────
+DOMAIN_LABELS = {
+    "python_backend": "Python & Backend",
+    "system_design": "System Design",
+    "dsa": "Data Structures & Algorithms",
+    "database": "Database & SQL",
+    "devops_cloud": "DevOps & Cloud",
+    "machine_learning": "Machine Learning",
+    "javascript_frontend": "JavaScript & Frontend",
+    "behavioral_tech": "Behavioral (Tech)",
+}
 
-GENERATION_PROMPT = """\
-You are building a golden evaluation benchmark for AI agents.
+# ── Prompt ────────────────────────────────────────────────────────────────────
 
-Create ONE evaluation record for the following scenario:
+PROMPT = """\
+You are building a golden benchmark dataset for evaluating AI tech interviewers.
 
-Agent Role: {agent_role}
+Create ONE evaluation record for this tech interview scenario:
+
+Domain: {domain_label}
 Situation: {situation}
-Has Tool Calls: {has_tools}
+Interviewer has tools: {has_tools}
 Difficulty: {difficulty}
 
-Generate a JSON record with EXACTLY this structure:
+Output a JSON object with EXACTLY these fields:
 {{
-  "user_goal": "<clear one-sentence goal the user wants to achieve>",
-  "system_prompt": "<the system prompt that would be given to the agent, 2-4 sentences>",
-  "initial_message": "<the user's first message to start the conversation>",
-  "expected_response": "<what an ideal final agent response looks like, 3-6 sentences>",
-  "expected_trajectory": {trajectory_hint},
+  "user_goal": "<one-sentence goal of what the interviewer should achieve in this session>",
+  "system_prompt": "<2-3 sentence system prompt for the AI interviewer agent>",
+  "initial_message": "<candidate's opening message to start the interview turn>",
+  "expected_response": "<ideal interviewer response — clear, pedagogical, technically accurate, 3-5 sentences>",
+  "expected_trajectory": {trajectory},
   "assertions": [
-    "<specific, verifiable assertion 1>",
-    "<specific, verifiable assertion 2>",
-    "<specific, verifiable assertion 3>"
+    "<specific verifiable assertion 1 about what the ideal response must contain>",
+    "<specific verifiable assertion 2>",
+    "<specific verifiable assertion 3>"
   ]
 }}
 
 Rules:
-- expected_response must be what a PERFECT agent would say as its final message
-- assertions must be specific and checkable (not vague)
-- if has_tools is true, expected_trajectory must list tool names in order
-- if has_tools is false, expected_trajectory must be []
-- Output ONLY the JSON, no markdown, no explanation
+- expected_response is what a PERFECT interviewer would say
+- assertions must be concrete and checkable (e.g. "Response explains time complexity", not "Response is good")
+- Output ONLY the JSON, no markdown fences, no extra text
 """
 
-# ── Generator ────────────────────────────────────────────────────────────────
+
+# ── Core logic (reused by app.py) ────────────────────────────────────────────
 
 
-def build_prompt(template: dict) -> str:
-    trajectory_hint = (
-        '["tool_name_1", "tool_name_2"]' if template["has_tools"] else "[]"
-    )
-    return GENERATION_PROMPT.format(
-        agent_role=template["agent_role"],
+def build_templates(domains: list[str], records_per_domain: int) -> list[dict]:
+    """Return flattened list of templates for selected domains."""
+    templates = []
+    for domain in domains:
+        domain_scenarios = SCENARIOS.get(domain, [])[:records_per_domain]
+        for s in domain_scenarios:
+            templates.append({**s, "domain": domain})
+    return templates
+
+
+def make_prompt(template: dict) -> str:
+    traj = '["tool_name_1", "tool_name_2"]' if template["has_tools"] else "[]"
+    return PROMPT.format(
+        domain_label=DOMAIN_LABELS.get(template["domain"], template["domain"]),
         situation=template["situation"],
         has_tools=str(template["has_tools"]).lower(),
         difficulty=template["difficulty"],
-        trajectory_hint=trajectory_hint,
+        trajectory=traj,
     )
 
 
-def parse_json_from_output(text: str) -> Optional[dict]:
-    """Extract JSON from model output, handling markdown code blocks."""
-    # Strip markdown code fences
+def parse_output(text: str) -> Optional[dict]:
     text = re.sub(r"```(?:json)?\s*", "", text).strip()
-    # Find the outermost JSON object
-    for match in reversed(list(re.finditer(r"\{[\s\S]{50,}\}", text))):
+    for m in reversed(list(re.finditer(r"\{[\s\S]{40,}\}", text))):
         try:
-            return json.loads(match.group())
+            return json.loads(m.group())
         except json.JSONDecodeError:
             continue
-    # Last attempt: try the whole string
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
 
 
-def validate_record(data: dict) -> bool:
+def validate(data: dict) -> bool:
     required = [
         "user_goal",
         "system_prompt",
@@ -358,44 +389,34 @@ def validate_record(data: dict) -> bool:
         "expected_trajectory",
         "assertions",
     ]
-    return all(k in data for k in required) and isinstance(data.get("assertions"), list)
-
-
-def generate_record(client, template: dict, dry_run: bool = False) -> Optional[dict]:
-    prompt = build_prompt(template)
-
-    if dry_run:
-        print(f"\n{'=' * 60}")
-        print(f"[DRY RUN] {template['id']}")
-        print(prompt[:300], "...")
-        return None
-
-    print(
-        f"  Generating {template['id']} ({template['domain']} / {template['difficulty']})...",
-        end=" ",
-        flush=True,
+    return (
+        all(k in data for k in required)
+        and isinstance(data.get("assertions"), list)
+        and len(data["assertions"]) >= 1
     )
+
+
+def call_model(client, template: dict) -> Optional[dict]:
     try:
         resp = client.chat_completion(
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a precise benchmark dataset creator. Output ONLY valid JSON.",
+                    "content": "You are a precise benchmark creator. Output ONLY valid JSON.",
                 },
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": make_prompt(template)},
             ],
             max_tokens=1200,
-            temperature=0.75,
+            temperature=0.7,
         )
         raw = resp.choices[0].message.content or ""
-        data = parse_json_from_output(raw)
-        if not data or not validate_record(data):
-            print("⚠ parse failed")
+        data = parse_output(raw)
+        if not data or not validate(data):
             return None
-
-        record = {
+        return {
             "id": template["id"],
             "domain": template["domain"],
+            "domain_label": DOMAIN_LABELS.get(template["domain"], template["domain"]),
             "difficulty": template["difficulty"],
             "has_tools": template["has_tools"],
             "scenario": {
@@ -414,87 +435,99 @@ def generate_record(client, template: dict, dry_run: bool = False) -> Optional[d
                 "tags": [template["domain"], template["difficulty"]],
             },
         }
-        print("✓")
-        return record
-    except Exception as e:
-        print(f"✗ error: {e}")
+    except Exception:
         return None
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+def upload_to_hf(output_path: Path, hf_token: str = None):
+    from huggingface_hub import upload_file
+
+    upload_file(
+        path_or_fileobj=str(output_path),
+        path_in_repo="data/golden_dataset.jsonl",
+        repo_id=DATASET_REPO,
+        repo_type="dataset",
+        token=hf_token,
+        commit_message=f"data: generated golden dataset ({date.today()})",
+    )
+
+
+# ── CLI entry point ───────────────────────────────────────────────────────────
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--limit", type=int, default=None, help="Max records to generate"
+        "--domains",
+        nargs="+",
+        default=list(SCENARIOS.keys()),
+        choices=list(SCENARIOS.keys()),
     )
+    parser.add_argument("--records-per-domain", type=int, default=5)
+    parser.add_argument("--output", default=str(OUTPUT_FILE))
     parser.add_argument(
-        "--dry-run", action="store_true", help="Print prompts without API calls"
+        "--upload", action="store_true", help="Auto-upload to HF after generation"
     )
-    parser.add_argument(
-        "--output", default=str(OUTPUT_FILE), help="Output JSONL file path"
-    )
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    templates = SCENARIO_TEMPLATES
-    if args.limit:
-        templates = templates[: args.limit]
-
-    print(f"🎯 Generating {len(templates)} golden records with {GENERATOR_MODEL}")
-    print(f"📁 Output: {output_path}\n")
+    templates = build_templates(args.domains, args.records_per_domain)
+    print(f"🎯 {len(templates)} records  |  model: {GENERATOR_MODEL}\n")
 
     if args.dry_run:
         for t in templates:
-            generate_record(None, t, dry_run=True)
+            print(
+                f"  [{t['domain']}] {t['id']} ({t['difficulty']}) — {t['situation'][:60]}..."
+            )
         return
 
-    # Init client
     from huggingface_hub import InferenceClient
 
     client = InferenceClient(model=GENERATOR_MODEL)
 
-    records = []
-    failed = []
+    records, failed = [], []
 
-    # Load existing records to allow resuming
+    # Resume support
+    existing_ids = set()
     if output_path.exists():
-        existing_ids = set()
         with open(output_path) as f:
             for line in f:
                 r = json.loads(line)
                 existing_ids.add(r["id"])
                 records.append(r)
-        print(f"  Resuming — {len(records)} records already generated\n")
+        print(f"  Resuming — {len(records)} records already done\n")
         templates = [t for t in templates if t["id"] not in existing_ids]
 
     with open(output_path, "a", encoding="utf-8") as f:
-        for template in templates:
-            record = generate_record(client, template)
-            if record:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        for t in templates:
+            print(
+                f"  {t['id']:20s} ({t['domain']}/{t['difficulty']})... ",
+                end="",
+                flush=True,
+            )
+            rec = call_model(client, t)
+            if rec:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
-                records.append(record)
+                records.append(rec)
+                print("✓")
             else:
-                failed.append(template["id"])
-            time.sleep(0.5)  # gentle rate limiting
+                failed.append(t["id"])
+                print("✗ parse failed")
+            time.sleep(0.4)
 
-    print(f"\n{'=' * 50}")
-    print(f"✅ Generated: {len(records)} records")
-    if failed:
-        print(f"⚠ Failed:    {len(failed)} records: {failed}")
-    print(f"📁 Saved to: {output_path}")
-
-    # Print domain breakdown
-    from collections import Counter
-
+    print(f"\n✅ {len(records)} generated  |  ✗ {len(failed)} failed")
     domains = Counter(r["domain"] for r in records)
-    print("\nDomain breakdown:")
-    for domain, count in sorted(domains.items()):
-        print(f"  {domain:20s}: {count}")
+    for d, c in sorted(domains.items()):
+        print(f"  {d:25s}: {c}")
+
+    if args.upload and records:
+        print("\n📤 Uploading to HF...")
+        upload_to_hf(output_path)
+        print(f"✓ Uploaded → https://huggingface.co/datasets/{DATASET_REPO}")
 
 
 if __name__ == "__main__":
