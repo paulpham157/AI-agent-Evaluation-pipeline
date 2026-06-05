@@ -16,6 +16,11 @@ from .evaluators import (
 )
 from .models import EvalLevel, EvalMode, EvalReport, EvalScore, GroundTruth, Session
 
+try:
+    from .llm_judge import LLMJudge as _LLMJudge
+except ImportError:
+    _LLMJudge = None  # type: ignore
+
 
 class EvalRunner:
     """
@@ -33,9 +38,11 @@ class EvalRunner:
         selected_span_evals: Optional[List[str]] = None,
         threshold: float = 0.6,
         mode: EvalMode = EvalMode.HEURISTIC,
+        llm_judge=None,
     ):
         self.threshold = threshold
         self.mode = mode
+        self.llm_judge = llm_judge  # LLMJudge instance or None
 
         # Fall back to defaults if None
         sess_names = (
@@ -71,6 +78,8 @@ class EvalRunner:
         start = time.time()
         scores: List[EvalScore] = []
 
+        judge = self.llm_judge if self.mode == EvalMode.LLM else None
+
         # ── SESSION level ──────────────────────────────────────────────────
         for name, ev in self._session_evals.items():
             try:
@@ -79,10 +88,11 @@ class EvalRunner:
                     ground_truth=ground_truth,
                     threshold=self.threshold,
                     mode=self.mode,
+                    llm_judge=judge,
                 )
                 scores.append(score)
             except Exception:
-                pass  # Silently skip failed evaluators in MVP
+                pass
 
         # ── TRACE level  ──────────────────────────────────────────────────
         for trace in session.traces:
@@ -94,6 +104,7 @@ class EvalRunner:
                         ground_truth=ground_truth,
                         threshold=self.threshold,
                         mode=self.mode,
+                        llm_judge=judge,
                     )
                     scores.append(score)
                 except Exception:
@@ -111,6 +122,7 @@ class EvalRunner:
                             ground_truth=ground_truth,
                             threshold=self.threshold,
                             mode=self.mode,
+                            llm_judge=judge,
                         )
                         scores.append(score)
                     except Exception:
