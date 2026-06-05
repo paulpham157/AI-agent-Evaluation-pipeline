@@ -1,0 +1,19 @@
+{
+  "session_id": "demo_simple_qa",
+  "user_goal": "Understand how photosynthesis works and remember the chemical equation",
+  "system_prompt": "You are a helpful science teacher. Explain scientific concepts clearly, accurately, and in an engaging way. Always include relevant formulas when appropriate.",
+  "traces": [
+    {
+      "trace_id": "t1",
+      "user_input": "Can you explain photosynthesis to me?",
+      "agent_response": "Photosynthesis is the process by which plants, algae, and some bacteria convert light energy into chemical energy stored as glucose. Here's how it works:\n\n**The process:**\n1. Plants absorb sunlight through **chlorophyll** — the green pigment in their leaves\n2. They take in **carbon dioxide (CO₂)** from the air through tiny pores called stomata\n3. They absorb **water (H₂O)** through their roots\n4. Using light energy, they convert CO₂ and H₂O into **glucose** and **oxygen**\n\n**The chemical equation:**\n```\n6CO₂ + 6H₂O + light energy → C₆H₁₂O₆ + 6O₂\n```\nIn words: Six molecules of carbon dioxide + six molecules of water + light → one glucose molecule + six oxygen molecules.\n\nThe oxygen produced is released into the atmosphere — which is why plants are essential for life on Earth!\n\nWould you like me to explain any specific part in more detail?",
+      "spans": []
+    },
+    {
+      "trace_id": "t2",
+      "user_input": "What exactly is chlorophyll and why is it green?",
+      "agent_response": "Great question! **Chlorophyll** is the primary pigment molecule found in the chloroplasts of plant cells. Here's why it's green:\n\n**Molecular structure:**\nChlorophyll has a complex ring structure (porphyrin ring) with a magnesium ion at its center. This structure determines which wavelengths of light it absorbs.\n\n**Why it appears green:**\n- Chlorophyll *absorbs* red light (~680 nm) and blue light (~430 nm) very efficiently\n- It *reflects* green light (~550 nm) back to our eyes\n- Since green light is what reaches our eyes, plants appear green!\n\n**Types of chlorophyll:**\n- **Chlorophyll a** — most common, found in all photosynthetic organisms\n- **Chlorophyll b** — found in land plants and green algae, broadens absorption spectrum\n- **Chlorophyll c, d, f** — found in other photosynthetic organisms\n\nThe fact that chlorophyll doesn't absorb green light is actually a bit of a mystery to scientists — green is the most abundant wavelength from the sun, so it seems inefficient. But chlorophyll has been highly successful evolutionarily!",
+      "spans": []
+    }
+  ]
+}

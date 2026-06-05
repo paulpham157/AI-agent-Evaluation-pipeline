@@ -1,0 +1,39 @@
+{
+  "session_id": "demo_tool_calling",
+  "user_goal": "Find current weather in Tokyo and get clothing recommendations for sightseeing",
+  "system_prompt": "You are a helpful travel assistant with access to weather and recommendation tools. Always use tools to get real-time data before answering. Be concise and practical.",
+  "traces": [
+    {
+      "trace_id": "t1",
+      "user_input": "What's the weather in Tokyo right now? I'm going sightseeing and need to know what to wear.",
+      "agent_response": "Let me check the current weather in Tokyo for you!\n\n🌤️ **Tokyo Weather (Current)**\n- Temperature: **18°C (64°F)**\n- Condition: Partly cloudy\n- Humidity: 65%\n- Wind: Light breeze at 12 km/h\n- Feels like: 17°C\n\n**Clothing Recommendations for Sightseeing:**\n\n✅ **Recommended:**\n- Light jacket or cardigan (layers are key — it can warm up midday)\n- Comfortable walking shoes or sneakers\n- Light scarf (for wind and cooler spots)\n- Umbrella or compact rain jacket (clouds may develop)\n\n❌ **Avoid:**\n- Heavy winter coat (too warm)\n- Sandals (great deal of walking expected)\n\n**Pro tip:** Tokyo can feel cooler in shaded temple gardens — the layers will come in handy at Senso-ji or Meiji Shrine!\n\nAnything else you'd like to know for your trip?",
+      "spans": [
+        {
+          "span_id": "s1",
+          "span_type": "TOOL_CALL",
+          "tool_name": "get_current_weather",
+          "tool_input": {
+            "city": "Tokyo",
+            "units": "celsius",
+            "include_feels_like": true
+          },
+          "tool_output": "{\"city\": \"Tokyo\", \"temperature\": 18, \"feels_like\": 17, \"condition\": \"partly_cloudy\", \"humidity\": 65, \"wind_speed_kmh\": 12, \"visibility_km\": 10}",
+          "duration_ms": 245
+        },
+        {
+          "span_id": "s2",
+          "span_type": "TOOL_CALL",
+          "tool_name": "get_clothing_recommendations",
+          "tool_input": {
+            "temperature_celsius": 18,
+            "condition": "partly_cloudy",
+            "activity": "sightseeing",
+            "humidity": 65
+          },
+          "tool_output": "{\"recommendations\": [\"light jacket\", \"layers\", \"comfortable walking shoes\", \"umbrella\", \"light scarf\"], \"avoid\": [\"heavy coat\", \"sandals\"]}",
+          "duration_ms": 189
+        }
+      ]
+    }
+  ]
+}

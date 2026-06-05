@@ -1,0 +1,56 @@
+{
+  "session_id": "demo_multi_turn",
+  "user_goal": "Find and book a table at a highly-rated Italian restaurant in San Francisco for 2 people tonight",
+  "system_prompt": "You are a helpful restaurant concierge. Help users find and book restaurants that match their preferences. Always search for real-time availability before recommending. Be friendly but efficient.",
+  "traces": [
+    {
+      "trace_id": "t1",
+      "user_input": "I'd like to have Italian food for dinner tonight.",
+      "agent_response": "Wonderful choice! Italian food in San Francisco has some fantastic options. Let me find the best available restaurants for you tonight.\n\nTo make sure I find the perfect place, could you tell me:\n1. **How many guests?** (party size helps check availability)\n2. **Any preferences?** (upscale/casual, specific neighborhood, budget range?)\n3. **Dietary restrictions?** (vegetarian, gluten-free, etc.)\n\nI'll search for top-rated options with tonight's availability once I have these details!",
+      "spans": []
+    },
+    {
+      "trace_id": "t2",
+      "user_input": "It's just 2 of us. We'd prefer something nice but not too formal. We're in the Mission District. No dietary restrictions.",
+      "agent_response": "Perfect! Let me search for highly-rated Italian restaurants near the Mission District with availability for 2 tonight.\n\n🍝 **Top Italian Restaurants Near Mission District (Available Tonight)**\n\n1. **Flour + Water** ⭐⭐⭐⭐⭐ (4.7/5 · $$)\n   - Famous for house-made pasta and wood-fired dishes\n   - Vibe: Upscale-casual, romantic, lively\n   - Available: **7:00 PM** or **9:00 PM**\n\n2. **Delfina** ⭐⭐⭐⭐½ (4.5/5 · $$)\n   - Neighborhood Italian institution since 1998\n   - Vibe: Cozy, neighborhood feel, excellent wine list\n   - Available: **6:30 PM** or **8:00 PM**\n\n3. **Locanda** ⭐⭐⭐⭐ (4.3/5 · $$$)\n   - Roman-inspired cuisine, impressive antipasti\n   - Vibe: Sophisticated casual, great cocktail bar\n   - Available: **7:30 PM** only\n\nAll three are within 10 minutes of each other. **Flour + Water** tends to be the most popular tonight. Which one catches your eye?",
+      "spans": [
+        {
+          "span_id": "s1",
+          "span_type": "TOOL_CALL",
+          "tool_name": "search_restaurants",
+          "tool_input": {
+            "location": "Mission District, San Francisco",
+            "cuisine": "Italian",
+            "party_size": 2,
+            "date": "today",
+            "price_range": "$$-$$$",
+            "sort_by": "rating"
+          },
+          "tool_output": "[{\"name\": \"Flour + Water\", \"rating\": 4.7, \"price\": \"$$\", \"style\": \"upscale-casual\", \"available_times\": [\"19:00\", \"21:00\"]}, {\"name\": \"Delfina\", \"rating\": 4.5, \"price\": \"$$\", \"style\": \"cozy\", \"available_times\": [\"18:30\", \"20:00\"]}, {\"name\": \"Locanda\", \"rating\": 4.3, \"price\": \"$$$\", \"style\": \"sophisticated\", \"available_times\": [\"19:30\"]}]",
+          "duration_ms": 312
+        }
+      ]
+    },
+    {
+      "trace_id": "t3",
+      "user_input": "Flour + Water sounds great! Let's book the 7:00 PM slot.",
+      "agent_response": "Excellent choice! Flour + Water is fantastic — their tagliatelle bolognese is legendary. Let me book that right now!\n\n⏳ Booking for 2 at 7:00 PM tonight...\n\n✅ **Reservation Confirmed!**\n\n| Detail | Info |\n|--------|------|\n| 🍽️ Restaurant | **Flour + Water** |\n| 📅 Date | Tonight, January 15, 2024 |\n| ⏰ Time | **7:00 PM** |\n| 👥 Party | 2 guests |\n| 📍 Address | 2401 Harrison St, San Francisco |\n| 🎫 Confirmation # | **FW-20240115-7PM-2** |\n\n**Before you go:**\n- They take walk-ins at the bar if you arrive early\n- The tagliatelle and any pasta special are must-orders\n- Street parking on Harrison is usually available after 6 PM\n- You can modify/cancel up to 2 hours before\n\nEnjoy your evening! 🥂",
+      "spans": [
+        {
+          "span_id": "s2",
+          "span_type": "TOOL_CALL",
+          "tool_name": "create_reservation",
+          "tool_input": {
+            "restaurant_name": "Flour + Water",
+            "party_size": 2,
+            "date": "2024-01-15",
+            "time": "19:00",
+            "special_requests": null
+          },
+          "tool_output": "{\"success\": true, \"confirmation_number\": \"FW-20240115-7PM-2\", \"restaurant\": \"Flour + Water\", \"address\": \"2401 Harrison St, San Francisco, CA\", \"date\": \"2024-01-15\", \"time\": \"19:00\", \"party_size\": 2, \"cancellation_deadline\": \"17:00\"}",
+          "duration_ms": 456
+        }
+      ]
+    }
+  ]
+}
