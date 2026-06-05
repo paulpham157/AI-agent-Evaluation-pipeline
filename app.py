@@ -46,6 +46,7 @@ from src.evaluators import (
 from src.llm_judge import LLMJudge
 from src.models import EvalLevel, EvalMode, GroundTruth
 from src.parser import format_trace_tree, parse_trace
+from src.reliability import compute_reliability
 from src.runner import EvalRunner
 from src.visualizer import create_bar_chart, create_radar_chart, create_trace_timeline
 
@@ -309,6 +310,56 @@ def run_dataset_generation(domains: list, n_per_domain: int, hf_token: str):
 # ─── Main evaluation function ────────────────────────────────────────────────
 
 
+def render_reliability(rel_report, k: int) -> str:
+    """Render pass@k / pass^k as an HTML table."""
+    if not rel_report or not rel_report.evaluator_results:
+        return ""
+    rows = rel_report.summary_table()
+    verdict_style = {
+        "reliable": ("#4CAF50", "✅"),
+        "unstable": ("#FF9800", "⚠️"),
+        "unreliable": ("#F44336", "❌"),
+    }
+    header = (
+        f"<h3 style='color:#63B3ED;margin:18px 0 10px;font-size:15px;'>"
+        f"🔄 Reliability Testing — k={k} trials</h3>"
+        f"<div style='background:rgba(99,179,237,0.08);border-radius:8px;padding:12px 16px;margin-bottom:10px;font-size:12px;color:#aaa;'>"
+        f"<b>pass@{k}</b> = P(≥1 of {k} trials passes) — optimistic bound &nbsp;| "
+        f"<b>pass^{k}</b> = P(ALL {k} trials pass) — reliability estimate</div>"
+    )
+    table = (
+        "<table style='width:100%;border-collapse:collapse;font-size:12px;'>"
+        "<thead><tr style='color:#aaa;border-bottom:1px solid rgba(255,255,255,0.1);'>"
+        f"<th style='text-align:left;padding:6px 8px;'>Evaluator</th>"
+        f"<th style='text-align:center;padding:6px 8px;'>Avg</th>"
+        f"<th style='text-align:center;padding:6px 8px;'>pass@{k}</th>"
+        f"<th style='text-align:center;padding:6px 8px;'>pass^{k}</th>"
+        f"<th style='text-align:center;padding:6px 8px;'>Verdict</th>"
+        "</tr></thead><tbody>"
+    )
+    for r in rows:
+        color, icon = verdict_style.get(r["Verdict"], ("#888", "?"))
+        table += (
+            f"<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'>"
+            f"<td style='padding:5px 8px;color:#ddd;'>{r['Evaluator']}</td>"
+            f"<td style='text-align:center;padding:5px 8px;color:#ccc;'>{r['Avg Score']}</td>"
+            f"<td style='text-align:center;padding:5px 8px;color:#63B3ED;font-weight:600;'>{r[f'pass@{k}']}</td>"
+            f"<td style='text-align:center;padding:5px 8px;color:{color};font-weight:700;'>{r[f'pass^{k}']}</td>"
+            f"<td style='text-align:center;padding:5px 8px;'><span style='color:{color};'>{icon} {r['Verdict']}</span></td>"
+            "</tr>"
+        )
+    table += "</tbody></table>"
+
+    summary = (
+        f"<div style='margin-top:10px;padding:10px 14px;background:rgba(255,255,255,0.05);"
+        f"border-radius:6px;font-size:12px;color:#ccc;'>"
+        f"Overall — pass@{k}: <b style='color:#63B3ED;'>{rel_report.overall_pass_at_k:.0%}</b>"
+        f" &nbsp;| pass^{k}: <b style='color:#4CAF50;'>{rel_report.overall_pass_hat_k:.0%}</b>"
+        f" &nbsp;| avg score: <b>{rel_report.avg_score:.0%}</b></div>"
+    )
+    return header + table + summary
+
+
 def run_evaluation(
     trace_json: str,
     use_session: bool,
@@ -318,6 +369,7 @@ def run_evaluation(
     sel_trace: list,
     sel_span: list,
     threshold: float,
+    k_trials: int,
     eval_mode_radio: str,
     hf_token: str,
     exp_response: str,
@@ -374,8 +426,9 @@ def run_evaluation(
             warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM mode selected but no HF Token provided — falling back to heuritic.</div>"
             mode = EvalMode.HEURISTIC
 
-    # ── 5. Run evaluation ──────────────────────────────────────────────────
-    progress(0.15, desc="Running session evaluators…")
+    # ── 5. Run evaluation (single or k trials) ─────────────────────────────
+    progress(0.15, desc="Running evaluators…")
+    k = int(k_trials)
     runner = EvalRunner(
         selected_session_evals=sess_evals,
         selected_trace_evals=trace_evals,
@@ -384,8 +437,16 @@ def run_evaluation(
         mode=mode,
         llm_judge=judge,
     )
-    progress(0.40, desc="Running trace evaluators…")
-    report = runner.run(session, gt)
+
+    if k > 1:
+        progress(0.20, desc=f"Running {k} trials…")
+        reports = runner.run_k_trials(session, gt, k=k)
+        report = reports[0]  # use first for charts
+        rel_report = compute_reliability(reports, threshold=threshold)
+    else:
+        report = runner.run(session, gt)
+        rel_report = None
+
     progress(0.75, desc="Building visualizations…")
 
     # ── 5. Overall banner ─────────────────────────────────────────────────
@@ -452,8 +513,9 @@ def run_evaluation(
     bar = create_bar_chart(report)
     heatmap = create_trace_timeline(report)
 
+    rel_html = render_reliability(rel_report, k) if rel_report else ""
     progress(1.0, desc="Done!")
-    return banner, radar, bar, heatmap, cards_html
+    return banner, radar, bar, heatmap, rel_html, cards_html
 
 
 # ─── Gradio layout ───────────────────────────────────────────────────────────
@@ -629,6 +691,16 @@ with gr.Blocks(
                         info="Scores ≥ threshold are marked ✅ passed",
                     )
 
+                    gr.Markdown("**🔄 Reliability Testing (pass@k / pass^k)**")
+                    k_trials = gr.Slider(
+                        minimum=1,
+                        maximum=5,
+                        step=1,
+                        value=1,
+                        label="Trials (k)",
+                        info="k=1 → standard mode. k>1 → runs multiple trials, shows pass@k & pass^k.",
+                    )
+
                 with gr.Column(scale=2):
                     gr.Markdown("**📦 Session Evaluators** *(once per session)*")
                     sel_session = gr.CheckboxGroup(
@@ -694,8 +766,9 @@ with gr.Blocks(
                 radar_chart = gr.Plot(label="🕸️ Evaluator Scores (Radar)", scale=1)
                 bar_chart = gr.Plot(label="📊 Score Breakdown by Evaluator", scale=1)
 
-            heatmap_chart = gr.Plot(label="🗓️ Score Heatmap: Evaluators × Turns")
+            heatmap_chart = gr.Plot(label="🗋️ Score Heatmap: Evaluators × Turns")
 
+            reliability_html = gr.HTML("")
             score_cards_html = gr.HTML("")
 
         # ── Tab 4: Dataset Generator ──────────────────────────────────────
@@ -794,6 +867,7 @@ with gr.Blocks(
             sel_trace,
             sel_span,
             threshold,
+            k_trials,
             eval_mode_radio,
             hf_token,
             exp_response,
@@ -805,6 +879,7 @@ with gr.Blocks(
             radar_chart,
             bar_chart,
             heatmap_chart,
+            reliability_html,
             score_cards_html,
         ],
     )
