@@ -1,13 +1,13 @@
 # Gradio UI
-gradio>=4.44.0
+gradio>=6.14.0
 
 # Charts
 plotly>=5.18.0
 
 # REST API
-fastapi>=0.111.0
+fastapi>=0.115.2
 uvicorn[standard]>=0.29.0
 
 # HuggingFace (LLM-as-Judge, future)
-huggingface_hub>=0.25.0
+huggingface_hub>=0.33.5
 requests>=2.31.0
