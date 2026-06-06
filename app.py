@@ -568,11 +568,9 @@ _TRACE_CHOICES = [(ALL_EVALUATORS[n].display_name, n) for n in TRACE_EVALUATORS]
 _SPAN_CHOICES = [(ALL_EVALUATORS[n].display_name, n) for n in SPAN_EVALUATORS]
 
 with gr.Blocks(
-    css=_CSS,
     title="AI Agent Evaluation Pipeline",
-    theme=gr.themes.Soft(primary_hue="purple", secondary_hue="blue"),
 ) as demo:
-    gr.HTML(_TITLE_HTML)
+    gr.HTML(_TITLE_HTML, padding=True)
 
     with gr.Tabs():
         # ── Tab 1: Load Trace ─────────────────────────────────────────────
@@ -759,7 +757,8 @@ with gr.Blocks(
         with gr.Tab("📊 Results"):
             overall_banner = gr.HTML(
                 "<div style='text-align:center;color:rgba(150,150,150,0.6);padding:40px;'>"
-                "← Configure and run evaluation to see results here</div>"
+                "← Configure and run evaluation to see results here</div>",
+                padding=True,
             )
 
             with gr.Row():
@@ -768,8 +767,8 @@ with gr.Blocks(
 
             heatmap_chart = gr.Plot(label="🗋️ Score Heatmap: Evaluators × Turns")
 
-            reliability_html = gr.HTML("")
-            score_cards_html = gr.HTML("")
+            reliability_html = gr.HTML("", padding=True)
+            score_cards_html = gr.HTML("", padding=True)
 
         # ── Tab 4: Dataset Generator ──────────────────────────────────────
         with gr.Tab("🗂️ Dataset"):
@@ -806,13 +805,14 @@ with gr.Blocks(
                 with gr.Column(scale=1):
                     gen_status = gr.HTML(
                         "<div style='color:#888;padding:20px;text-align:center;'>"
-                        "Configure and click Generate to start.</div>"
+                        "Configure and click Generate to start.</div>",
+                        padding=True,
                     )
                     gen_log = gr.Textbox(
                         label="Progress",
                         lines=14,
                         interactive=False,
-                        show_copy_button=True,
+                        buttons=["copy"],
                     )
 
     # ── Tab 5: About ──────────────────────────────────────────────────────────
@@ -887,6 +887,8 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     demo.launch(
+        theme=gr.themes.Soft(primary_hue="purple", secondary_hue="blue"),
+        css=_CSS,
         server_name="0.0.0.0",
         server_port=int(os.getenv("PORT", 7860)),
         share=False,
