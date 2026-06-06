@@ -24,6 +24,33 @@ sys.path.insert(0, str(_ROOT))
 
 import gradio as gr
 
+# HF ZeroGPU Spaces require at least one @spaces.GPU-decorated function
+# to be detected at module load. The actual evaluation and dataset
+# generation work in this app uses the cloud InferenceClient and runs
+# without local GPU compute; the placeholder below exists only to
+# satisfy the runtime's static check. `spaces` is pre-installed on
+# ZeroGPU hardware; we guard the import so the app still loads if it
+# is missing (e.g. local CPU dev).
+try:
+    import spaces as _spaces
+except ImportError:
+    class _spaces_stub:
+        @staticmethod
+        def GPU(fn, duration: int = 60):
+            return fn
+    _spaces = _spaces_stub()
+
+
+@_spaces.GPU
+def _zero_gpu_healthcheck() -> dict:
+    """Placeholder GPU function detected by the ZeroGPU runtime."""
+    try:
+        import torch
+        return {"cuda_available": bool(torch.cuda.is_available())}
+    except ImportError:
+        return {"cuda_available": False, "note": "torch not installed"}
+
+
 from scripts.generate_golden_dataset import (
     DATASET_REPO,
     DOMAIN_LABELS,
