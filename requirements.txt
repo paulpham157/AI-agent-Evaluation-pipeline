@@ -9,10 +9,12 @@ fastapi>=0.115.2
 uvicorn[standard]>=0.29.0
 
 # HuggingFace (LLM-as-Judge, future)
-# Pinned <1.0 because the HF Spaces base image ships an older gradio
-# (pre-5.7.1) that imports HfFolder from huggingface_hub, which was
-# removed in huggingface_hub 1.0.0. The base-image gradio cannot be
-# overridden via pip install — pinning the dependency is the documented
-# fix on the HF Spaces forum for this exact crash.
-huggingface_hub>=0.33.5,<1.0
+# Pinned to exact 0.x version (0.36.2 is the last 0.x release) because
+# the HF Spaces base image ships an older gradio (pre-5.7.1) that does
+# 'from huggingface_hub import HfFolder' in oauth.py. HfFolder was
+# removed in huggingface_hub 1.0.0. A range pin (e.g. <1.0) is not
+# enough: pip keeps the higher version already in the base image if the
+# range still satisfies it. Exact pin forces a downgrade. The downgrade
+# is also forced again in pre-requirements.txt for extra safety.
+huggingface_hub==0.36.2
 requests>=2.31.0
