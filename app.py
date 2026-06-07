@@ -51,18 +51,6 @@ def _zero_gpu_healthcheck() -> dict:
         return {"cuda_available": False, "note": "torch not installed"}
 
 
-from scripts.generate_golden_dataset import (
-    DATASET_REPO,
-    DOMAIN_LABELS,
-    GENERATOR_MODEL,
-    SCENARIOS,
-    build_templates,
-    call_model,
-    make_prompt,
-    parse_output,
-    upload_to_hf,
-    validate,
-)
 from src.evaluators import (
     ALL_EVALUATORS,
     DEFAULT_TRACE_EVALS,
@@ -234,104 +222,290 @@ def parse_and_preview(trace_json: str) -> str:
         return f"❌ **Parse error:** `{e}`\n\nCheck that your JSON is valid and contains `user_goal` + `traces`."
 
 
-# ─── Dataset generation function ───────────────────────────────────────────────
+# ─── Benchmark functions ──────────────────────────────────────────────────────
 
 
-def run_dataset_generation(domains: list, n_per_domain: int, hf_token: str):
-    """Gradio generator: yields (status_html, log_text) as generation progresses."""
-    import json
-    import time
-    from pathlib import Path
+def load_records_from_url(url: str) -> list:
+    """Load JSONL records from a HF dataset repo URL (data/golden_dataset.jsonl)."""
+    from urllib.parse import urlparse
 
-    from huggingface_hub import InferenceClient
+    from huggingface_hub import hf_hub_download
 
-    output_path = _ROOT / "dataset" / "golden_dataset.jsonl"
-    output_path.parent.mkdir(exist_ok=True)
+    parsed = urlparse(url)
+    if "huggingface.co" not in parsed.netloc or "/datasets/" not in parsed.path:
+        raise ValueError(f"Not a HF dataset URL: {url}")
+    repo_id = parsed.path.split("/datasets/")[1].strip("/").split("/")[0]
+    path = hf_hub_download(
+        repo_id=repo_id,
+        filename="data/golden_dataset.jsonl",
+        repo_type="dataset",
+    )
+    with open(path, encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
 
-    if not domains:
-        yield (
-            "<div style='color:#FF9800;padding:16px;'>⚠️ Select at least one domain.</div>",
-            "",
-        )
-        return
 
-    templates = build_templates(domains, int(n_per_domain))
-    total = len(templates)
-    log_lines = []
+def parse_pasted_jsonl(text: str) -> list:
+    """Parse pasted JSONL content into list of records."""
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
 
-    def status_html(done, failed, total):
+
+def call_openai_compat(
+    url: str, scenario: dict, api_key: str, model: str, timeout: int = 60
+) -> str:
+    """POST to an OpenAI-compatible /v1/chat/completions endpoint."""
+    import requests
+
+    headers = {"Content-Type": "application/json"}
+    if api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key.strip()}"
+    body = {
+        "messages": [
+            {"role": "system", "content": scenario.get("system_prompt", "")},
+            {"role": "user", "content": scenario["initial_message"]},
+        ],
+    }
+    if model.strip():
+        body["model"] = model.strip()
+    r = requests.post(url, json=body, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    return data["choices"][0]["message"]["content"]
+
+
+def build_trace_json(rec: dict, agent_response: str) -> str:
+    """Build a parseable trace JSON from a dataset record + agent response."""
+    scenario = rec.get("scenario", {})
+    return json.dumps(
+        {
+            "session_id": rec.get("id", "unknown"),
+            "user_goal": scenario.get("user_goal", ""),
+            "system_prompt": scenario.get("system_prompt"),
+            "traces": [
+                {
+                    "trace_id": "t1",
+                    "user_input": scenario.get("initial_message", ""),
+                    "agent_response": agent_response,
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def run_benchmark(
+    dataset_url: str,
+    pasted_jsonl: str,
+    agent_url: str,
+    api_key: str,
+    model_name: str,
+    use_session: bool,
+    use_trace: bool,
+    use_span: bool,
+    sel_session: list,
+    sel_trace: list,
+    sel_span: list,
+    threshold: float,
+    progress=gr.Progress(track_tqdm=True),
+):
+    """Run benchmark: load dataset, call agent for each record, eval, aggregate."""
+
+    def render_status(phase: str, done: int, total: int, current_id: str = "") -> str:
         pct = int(done / total * 100) if total else 0
-        color = "#4CAF50" if failed == 0 else "#FF9800"
+        current = f" &nbsp;·&nbsp; ⏳ {current_id}" if current_id else ""
         return (
-            f"<div style='padding:14px;background:rgba(255,255,255,0.05);border-radius:8px;'>"
-            f"<div style='font-size:13px;color:#aaa;margin-bottom:6px;'>"
-            f"✅ {done} done &nbsp;·&nbsp; ✗ {failed} failed &nbsp;·&nbsp; {total} total</div>"
+            f"<div style='padding:12px;background:rgba(255,255,255,0.05);border-radius:8px;'>"
+            f"<div style='font-size:12px;color:#aaa;margin-bottom:6px;'>"
+            f"<b>{phase}</b> &nbsp;·&nbsp; {done}/{total} ({pct}%){current}</div>"
             f"<div style='background:rgba(255,255,255,0.1);border-radius:3px;height:6px;'>"
-            f"<div style='background:{color};height:6px;border-radius:3px;width:{pct}%;'></div>"
+            f"<div style='background:#63B3ED;height:6px;border-radius:3px;width:{pct}%;'></div>"
             f"</div></div>"
         )
 
-    # Load already-generated IDs
-    existing_ids = set()
-    if output_path.exists():
-        with open(output_path) as f:
-            for line in f:
-                existing_ids.add(json.loads(line)["id"])
+    def render_table(rows: list) -> str:
+        if not rows:
+            return ""
+        body = ""
+        for r in rows:
+            color = "#4CAF50" if r["passed"] else "#F44336"
+            icon = "✅" if r["passed"] else "⚠️"
+            score = r["score"]
+            score_str = f"{score:.0%}" if isinstance(score, float) else "—"
+            err_cell = (
+                f"<div style='color:#F44336;font-size:10px;'>{r['error']}</div>"
+                if r.get("error")
+                else ""
+            )
+            body += (
+                "<tr style='border-bottom:1px solid rgba(255,255,255,0.05);'>"
+                f"<td style='padding:6px 8px;color:#ddd;font-size:12px;'>{r['id']}</td>"
+                f"<td style='padding:6px 8px;color:#aaa;font-size:11px;'>{r['domain']}</td>"
+                f"<td style='padding:6px 8px;color:#aaa;font-size:11px;'>{r['difficulty']}</td>"
+                f"<td style='padding:6px 8px;text-align:center;color:{color};font-weight:700;'>{score_str} {icon}</td>"
+                f"<td style='padding:6px 8px;'>{err_cell}</td>"
+                "</tr>"
+            )
+        return (
+            "<table style='width:100%;border-collapse:collapse;margin-top:14px;'>"
+            "<thead><tr style='color:#aaa;border-bottom:1px solid rgba(255,255,255,0.1);font-size:11px;'>"
+            "<th style='text-align:left;padding:6px 8px;'>ID</th>"
+            "<th style='text-align:left;padding:6px 8px;'>Domain</th>"
+            "<th style='text-align:left;padding:6px 8px;'>Difficulty</th>"
+            "<th style='text-align:center;padding:6px 8px;'>Score</th>"
+            "<th style='text-align:left;padding:6px 8px;'>Error</th>"
+            "</tr></thead><tbody>" + body + "</tbody></table>"
+        )
 
-    pending = [t for t in templates if t["id"] not in existing_ids]
-    already_done = len(existing_ids)
+    def render_aggregate(rows: list, total: int) -> str:
+        scored = [r for r in rows if isinstance(r["score"], float)]
+        if not scored:
+            return ""
+        ok = sum(1 for r in scored if r["passed"])
+        avg = sum(r["score"] for r in scored) / len(scored)
+        by_domain: dict = {}
+        for r in scored:
+            d = r["domain"] or "—"
+            by_domain.setdefault(d, []).append(r["score"])
+        domain_chips = " ".join(
+            f"<span style='display:inline-block;margin:2px 6px 2px 0;padding:3px 9px;"
+            f"background:rgba(255,255,255,0.07);border-radius:10px;font-size:11px;color:#ccc;'>"
+            f"{d}: <b style='color:#4CAF50;'>{sum(s)/len(s):.0%}</b></span>"
+            for d, s in sorted(by_domain.items())
+        )
+        return (
+            f"<div style='margin-top:16px;padding:14px;background:rgba(99,179,237,0.08);"
+            f"border-radius:8px;border:1px solid rgba(99,179,237,0.2);'>"
+            f"<div style='color:#63B3ED;font-weight:700;font-size:14px;margin-bottom:8px;'>📊 Aggregate</div>"
+            f"<div style='color:#ccc;font-size:12px;margin-bottom:6px;'>"
+            f"Passed: <b style='color:#4CAF50;'>{ok}/{len(scored)}</b> "
+            f"&nbsp;·&nbsp; Avg: <b style='color:#4CAF50;'>{avg:.0%}</b>"
+            f"&nbsp;·&nbsp; Threshold: {threshold:.0%}</div>"
+            f"<div style='color:#aaa;font-size:11px;'>{domain_chips}</div></div>"
+        )
 
-    if not pending:
-        yield status_html(already_done, 0, total), "All records already generated."
+    def panel(*htmls: str) -> str:
+        return "".join(h for h in htmls if h)
+
+    progress(0.02, desc="Loading dataset…")
+    yield panel(render_status("Loading dataset", 0, 1)), "📂 Loading dataset…"
+    try:
+        if pasted_jsonl.strip():
+            records = parse_pasted_jsonl(pasted_jsonl)
+            source = "pasted JSONL"
+        else:
+            records = load_records_from_url(dataset_url.strip())
+            source = dataset_url.strip()
+    except Exception as e:
+        err = f"❌ Failed to load dataset: {e}"
+        yield (
+            panel(f"<div style='color:#F44336;padding:14px;'>{err}</div>"),
+            f"ERROR: {e}\nPaste JSONL directly if the URL is empty or unreachable.",
+        )
         return
 
-    log_lines.append(f"Model: {GENERATOR_MODEL}")
-    log_lines.append(f"Total: {total} records  |  Pending: {len(pending)}")
-    log_lines.append("=" * 45)
-    yield status_html(already_done, 0, total), "\n".join(log_lines)
+    if not records:
+        yield (
+            panel("<div style='color:#FF9800;padding:14px;'>⚠️ Dataset loaded but empty.</div>"),
+            "No records found in source.",
+        )
+        return
 
-    token = hf_token.strip() or None
-    client = InferenceClient(model=GENERATOR_MODEL, token=token)
-
-    done, failed = already_done, 0
-    with open(output_path, "a", encoding="utf-8") as f:
-        for t in pending:
-            log_lines.append(f"⏳ {t['id']} ({t['domain']}/{t['difficulty']})...")
-            yield status_html(done, failed, total), "\n".join(log_lines)
-
-            rec = call_model(client, t)
-            if rec:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                f.flush()
-                done += 1
-                log_lines[-1] = f"✅ {t['id']} ({t['domain']}/{t['difficulty']})"
-            else:
-                failed += 1
-                log_lines[-1] = f"✗  {t['id']} — parse failed"
-
-            yield status_html(done, failed, total), "\n".join(log_lines)
-            time.sleep(0.3)
-
-    # Upload to HF
-    log_lines.append("")
-    log_lines.append("📤 Uploading to HuggingFace dataset repo...")
-    yield status_html(done, failed, total), "\n".join(log_lines)
-    try:
-        upload_to_hf(output_path, hf_token=token)
-        log_lines.append(f"✓ Uploaded → {DATASET_REPO}")
-    except Exception as e:
-        log_lines.append(f"✗ Upload failed: {e}")
-
-    final_html = (
-        f"<div style='padding:14px;background:rgba(76,175,80,0.1);"
-        f"border-radius:8px;border:1px solid #4CAF50;'>"
-        f"<div style='color:#4CAF50;font-weight:700;font-size:15px;'>✅ Generation complete</div>"
-        f"<div style='color:#ccc;font-size:12px;margin-top:4px;'>"
-        f"{done} records &nbsp;·&nbsp; {failed} failed &nbsp;·&nbsp; "
-        f"<a href='https://huggingface.co/datasets/{DATASET_REPO}' target='_blank' "
-        f"style='color:#63B3ED;'>View dataset →</a></div></div>"
+    total = len(records)
+    log_lines = [f"✅ Loaded {total} records from {source}"]
+    yield (
+        panel(
+            render_status("Loaded", total, total),
+            f"<div style='color:#4CAF50;padding:10px;'>📂 {total} records loaded from {source}</div>",
+        ),
+        "\n".join(log_lines),
     )
-    yield final_html, "\n".join(log_lines)
+
+    if not agent_url.strip():
+        yield (
+            panel("<div style='color:#F44336;padding:14px;'>❌ Agent URL is empty.</div>"),
+            "ERROR: Provide an OpenAI-compatible chat completions URL.",
+        )
+        return
+
+    sess_evals = sel_session if use_session else []
+    trace_evals = sel_trace if use_trace else []
+    span_evals = sel_span if use_span else []
+    runner = EvalRunner(
+        selected_session_evals=sess_evals,
+        selected_trace_evals=trace_evals,
+        selected_span_evals=span_evals,
+        threshold=threshold,
+        mode=EvalMode.HEURISTIC,
+    )
+
+    results = []
+    for i, rec in enumerate(records):
+        rid = rec.get("id", f"rec_{i}")
+        domain = rec.get("domain", "")
+        difficulty = rec.get("difficulty", "")
+        progress(0.1 + 0.85 * i / total, desc=f"Running {rid}…")
+        log_lines.append(f"⏳ {rid} ({domain}/{difficulty})…")
+        yield (
+            panel(render_status("Running", i, total, rid), render_table(results)),
+            "\n".join(log_lines),
+        )
+
+        try:
+            scenario = rec.get("scenario") or {}
+            agent_out = call_openai_compat(
+                agent_url.strip(),
+                scenario,
+                api_key or "",
+                model_name or "",
+                timeout=60,
+            )
+            trace_json = build_trace_json(rec, agent_out)
+            session = parse_trace(trace_json)
+            gt_data = rec.get("ground_truth") or {}
+            gt = GroundTruth(
+                expected_response=gt_data.get("expected_response"),
+                expected_trajectory=gt_data.get("expected_trajectory"),
+                assertions=gt_data.get("assertions"),
+            )
+            report = runner.run(session, gt)
+            score = report.overall_score
+            results.append(
+                {
+                    "id": rid,
+                    "domain": domain,
+                    "difficulty": difficulty,
+                    "score": score,
+                    "passed": score >= threshold,
+                    "error": None,
+                }
+            )
+            log_lines[-1] = f"✅ {rid} — {score:.0%}"
+        except Exception as e:
+            results.append(
+                {
+                    "id": rid,
+                    "domain": domain,
+                    "difficulty": difficulty,
+                    "score": None,
+                    "passed": False,
+                    "error": f"{type(e).__name__}: {str(e)[:80]}",
+                }
+            )
+            log_lines[-1] = f"✗ {rid} — {type(e).__name__}: {str(e)[:60]}"
+
+        yield (
+            panel(render_status("Running", i + 1, total), render_table(results)),
+            "\n".join(log_lines),
+        )
+
+    progress(1.0, desc="Done!")
+    yield (
+        panel(
+            render_status("Done", total, total),
+            render_table(results),
+            render_aggregate(results, total),
+        ),
+        "\n".join(log_lines),
+    )
 
 
 # ─── Main evaluation function ────────────────────────────────────────────────
@@ -797,50 +971,99 @@ with gr.Blocks(
             reliability_html = gr.HTML("", padding=True)
             score_cards_html = gr.HTML("", padding=True)
 
-        # ── Tab 4: Dataset Generator ──────────────────────────────────────
-        with gr.Tab("🗂️ Dataset"):
-            gr.Markdown("### Generate Golden Dataset")
+        # ── Tab 4: Benchmark ───────────────────────────────────────────────
+        with gr.Tab("🧪 Benchmark"):
+            gr.Markdown("### 🧪 Benchmark — evaluate your agent against a dataset")
             gr.Markdown(
-                f"Generates **(input, expected_output)** pairs for tech interview evaluation. "
-                f"Uses `{GENERATOR_MODEL}`. "
-                f"Results auto-uploaded to `{DATASET_REPO}`."
+                "Each record's `initial_message` is POSTed to your agent (OpenAI-compatible "
+                "chat completions endpoint), the response is parsed into a trace, and all "
+                "selected evaluators run. Ground truth from the record is used automatically."
             )
 
             with gr.Row():
                 with gr.Column(scale=1):
-                    domain_select = gr.CheckboxGroup(
-                        choices=[(v, k) for k, v in DOMAIN_LABELS.items()],
-                        value=list(DOMAIN_LABELS.keys()),
-                        label="Domains",
+                    gr.Markdown("**📦 Dataset**")
+                    bm_dataset_url = gr.Textbox(
+                        label="HF Dataset URL (loads data/golden_dataset.jsonl)",
+                        value="https://huggingface.co/datasets/build-small-hackathon/agent-eval-golden-dataset",
+                        placeholder="https://huggingface.co/datasets/...",
                     )
-                    records_slider = gr.Slider(
-                        minimum=1,
-                        maximum=5,
-                        value=3,
-                        step=1,
-                        label="Records per domain",
+                    with gr.Accordion("📝 Or paste JSONL directly", open=False):
+                        bm_paste_jsonl = gr.Textbox(
+                            label="JSONL records",
+                            lines=8,
+                            placeholder='{"id":"python_001","scenario":{...},"ground_truth":{...}}\n...',
+                        )
+                    bm_load_btn = gr.Button(
+                        "🔄 Load Dataset", variant="secondary", size="sm"
                     )
-                    hf_token_gen = gr.Textbox(
-                        label="HF Token (requires Nemotron access)",
+                    bm_records_info = gr.HTML(
+                        "<div style='color:#888;padding:10px;'>No dataset loaded yet.</div>",
+                        padding=True,
+                    )
+
+                    gr.Markdown("**🤖 Agent (OpenAI-compatible)**")
+                    bm_agent_url = gr.Textbox(
+                        label="Chat completions URL",
+                        placeholder="https://your-agent.example.com/v1/chat/completions",
+                    )
+                    bm_api_key = gr.Textbox(
+                        label="API Key (optional)",
                         type="password",
-                        placeholder="hf_...",
+                        placeholder="Bearer xyz",
                     )
-                    gen_btn = gr.Button(
-                        "🚀 Generate & Upload Dataset", variant="primary", size="lg"
+                    bm_model_name = gr.Textbox(
+                        label="Model name (optional, sent in body if provided)",
+                        placeholder="gpt-4o-mini",
                     )
 
                 with gr.Column(scale=1):
-                    gen_status = gr.HTML(
-                        "<div style='color:#888;padding:20px;text-align:center;'>"
-                        "Configure and click Generate to start.</div>",
-                        padding=True,
+                    gr.Markdown("**⚙️ Eval settings**")
+                    bm_use_session = gr.Checkbox(label="📦 Session Level", value=True)
+                    bm_use_trace = gr.Checkbox(label="🔄 Trace Level", value=True)
+                    bm_use_span = gr.Checkbox(
+                        label="🔧 Span Level (tool calls)", value=True
                     )
-                    gen_log = gr.Textbox(
-                        label="Progress",
-                        lines=14,
-                        interactive=False,
-                        buttons=["copy"],
+                    bm_sel_session = gr.CheckboxGroup(
+                        choices=_SESS_CHOICES,
+                        value=SESSION_EVALUATORS,
+                        label="Session evaluators",
                     )
+                    bm_sel_trace = gr.CheckboxGroup(
+                        choices=_TRACE_CHOICES,
+                        value=DEFAULT_TRACE_EVALS,
+                        label="Trace evaluators",
+                    )
+                    bm_sel_span = gr.CheckboxGroup(
+                        choices=_SPAN_CHOICES,
+                        value=SPAN_EVALUATORS,
+                        label="Span evaluators",
+                    )
+                    bm_threshold = gr.Slider(
+                        minimum=0.30,
+                        maximum=0.90,
+                        step=0.05,
+                        value=0.60,
+                        label="Pass threshold",
+                    )
+                    bm_run_btn = gr.Button(
+                        "🚀 Run Benchmark",
+                        variant="primary",
+                        size="lg",
+                        elem_id="run-btn",
+                    )
+
+            with gr.Row():
+                bm_results = gr.HTML(
+                    "<div style='color:#888;padding:30px;text-align:center;'>"
+                    "Load a dataset and click Run Benchmark to start.</div>",
+                    padding=True,
+                )
+
+            with gr.Row():
+                bm_log = gr.Textbox(
+                    label="Log", lines=10, interactive=False, buttons=["copy"]
+                )
 
     # ── Tab 5: About ──────────────────────────────────────────────────────────
     with gr.Tabs():
@@ -867,19 +1090,58 @@ with gr.Blocks(
 | **Tool Parameter Accuracy** | SPAN | Did the agent pass correct parameters to the tool? |
 
 ### Roadmap
-- [ ] LLM-as-Judge mode (HuggingFace Inference API)
+- [x] LLM-as-Judge mode (HuggingFace Inference API)
 - [ ] OpenAI-compatible API support
-- [ ] pass@k / pass^k reliability metrics
+- [x] pass@k / pass^k reliability metrics
 - [ ] Export results as JSON / CSV
 - [ ] Custom evaluator builder (prompt templates)
-- [ ] Dataset management for regression testing
+- [x] Dataset management for regression testing (🧪 Benchmark tab)
             """)
 
-    # ── Wire: Dataset generator ─────────────────────────────────────────────────
-    gen_btn.click(
-        fn=run_dataset_generation,
-        inputs=[domain_select, records_slider, hf_token_gen],
-        outputs=[gen_status, gen_log],
+    # ── Wire: Benchmark ────────────────────────────────────────────────────────
+    def _preview_dataset(url, paste):
+        try:
+            if paste.strip():
+                records = parse_pasted_jsonl(paste)
+                src = "pasted JSONL"
+            else:
+                records = load_records_from_url(url.strip())
+                src = url.strip()
+            if not records:
+                return "<div style='color:#FF9800;padding:10px;'>⚠️ Loaded 0 records.</div>"
+            domains = sorted({r.get("domain", "") for r in records if r.get("domain")})
+            return (
+                f"<div style='color:#4CAF50;padding:10px;'>"
+                f"📂 {len(records)} records loaded from {src}"
+                f"<br><span style='color:#aaa;font-size:11px;'>"
+                f"Domains: {', '.join(domains)}</span></div>"
+            )
+        except Exception as e:
+            return f"<div style='color:#F44336;padding:10px;'>❌ {e}</div>"
+
+    bm_load_btn.click(
+        _preview_dataset,
+        inputs=[bm_dataset_url, bm_paste_jsonl],
+        outputs=bm_records_info,
+    )
+
+    bm_run_btn.click(
+        fn=run_benchmark,
+        inputs=[
+            bm_dataset_url,
+            bm_paste_jsonl,
+            bm_agent_url,
+            bm_api_key,
+            bm_model_name,
+            bm_use_session,
+            bm_use_trace,
+            bm_use_span,
+            bm_sel_session,
+            bm_sel_trace,
+            bm_sel_span,
+            bm_threshold,
+        ],
+        outputs=[bm_results, bm_log],
     )
 
     # ── Wire: Eval runner ──────────────────────────────────────────────────────
