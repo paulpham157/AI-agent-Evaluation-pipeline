@@ -27,12 +27,15 @@ Usage (decorator):
 """
 
 import json
+import logging
 import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from .models import EvalMode, GroundTruth
+
+logger = logging.getLogger(__name__)
 
 
 class SpanBuilder:
@@ -259,11 +262,12 @@ def trace_agent(
 
             if auto_evaluate:
                 report = tracer.evaluate()
-                print(
-                    f"[eval] session={tracer.session_id}  "
-                    f"overall={report.overall_score:.0%}  "
-                    f"turns={tracer.turn_count}  "
-                    f"time={tracer.elapsed:.2f}s"
+                logger.info(
+                    "[eval] session=%s  overall=%s  turns=%d  time=%.2fs",
+                    tracer.session_id,
+                    f"{report.overall_score:.0%}",
+                    tracer.turn_count,
+                    tracer.elapsed,
                 )
                 return result, report
 
