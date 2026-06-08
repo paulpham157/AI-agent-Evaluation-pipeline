@@ -2,8 +2,12 @@
 """
 Golden Dataset Generator — Tech Interview Domains
 ==================================================
-Uses NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 to generate golden (input, expected_output)
+Uses NVIDIA Nemotron models to generate golden (input, expected_output)
 pairs for evaluating AI agents conducting **tech job interviews**.
+
+Supports two backends:
+  - HF Inference API (default): nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+  - vLLM on ZeroGPU: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
 
 Domains:
   python_backend       — Python, FastAPI, async, OOP
@@ -20,6 +24,7 @@ Usage:
     python scripts/generate_golden_dataset.py --domains python_backend system_design
     python scripts/generate_golden_dataset.py --records-per-domain 3
     python scripts/generate_golden_dataset.py --dry-run
+    python scripts/generate_golden_dataset.py --backend vllm --model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
 """
 
 import argparse
@@ -46,9 +51,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── Config (env-driven) ──────────────────────────────────────────────────────
 GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16")
 DATASET_REPO = os.getenv("DATASET_REPO", "build-small-hackathon/agent-eval-golden-dataset")
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "dataset/golden_dataset.jsonl"))
+BACKEND = os.getenv("GENERATOR_BACKEND", "inference")  # "inference" | "vllm"
+VLLM_MODEL = os.getenv("VLLM_MODEL", GENERATOR_MODEL)
+VLLM_GPU_MEMORY_UTILIZATION = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.9"))
+VLLM_MAX_MODEL_LEN = int(os.getenv("VLLM_MAX_MODEL_LEN", "4096"))
+VLLM_TENSOR_PARALLEL_SIZE = int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "1"))
 
 # ── Tech Interview Scenario Templates ────────────────────────────────────────
 
@@ -408,7 +419,99 @@ def validate(data: dict) -> bool:
     )
 
 
-def call_model(client, template: dict) -> Optional[dict]:
+# ─── vLLM Client (ZeroGPU) ────────────────────────────────────────────────────
+
+class VLLMClient:
+    """vLLM client for local GPU inference on ZeroGPU."""
+
+    def __init__(
+        self,
+        model: str = VLLM_MODEL,
+        gpu_memory_utilization: float = VLLM_GPU_MEMORY_UTILIZATION,
+        max_model_len: int = VLLM_MAX_MODEL_LEN,
+        tensor_parallel_size: int = VLLM_TENSOR_PARALLEL_SIZE,
+    ):
+        self.model = model
+        self.gpu_memory_utilization = gpu_memory_utilization
+        self.max_model_len = max_model_len
+        self.tensor_parallel_size = tensor_parallel_size
+        self._llm = None
+        self._sampling_params = None
+
+    def _init_llm(self):
+        if self._llm is not None:
+            return
+        try:
+            from vllm import LLM, SamplingParams
+        except ImportError as e:
+            raise RuntimeError("vllm not installed. Install with: pip install vllm") from e
+
+        logger.info("Initializing vLLM with model=%s", self.model)
+        self._llm = LLM(
+            model=self.model,
+            gpu_memory_utilization=self.gpu_memory_utilization,
+            max_model_len=self.max_model_len,
+            tensor_parallel_size=self.tensor_parallel_size,
+            dtype="auto",
+            trust_remote_code=True,
+        )
+        self._sampling_params = SamplingParams(
+            max_tokens=1200,
+            temperature=0.7,
+            top_p=0.95,
+        )
+        logger.info("vLLM initialized successfully")
+
+    def chat_completion(self, messages, max_tokens=1200, temperature=0.7, top_p=0.95):
+        self._init_llm()
+
+        # Convert messages to prompt format
+        prompt = self._messages_to_prompt(messages)
+
+        # Update sampling params if needed
+        if max_tokens != 1200 or temperature != 0.7 or top_p != 0.95:
+            from vllm import SamplingParams
+            sampling_params = SamplingParams(
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+        else:
+            sampling_params = self._sampling_params
+
+        outputs = self._llm.generate([prompt], sampling_params)
+        generated_text = outputs[0].outputs[0].text
+
+        # Return object compatible with InferenceClient response
+        class Choice:
+            def __init__(self, text):
+                self.message = type('Message', (), {'content': text})()
+
+        class Response:
+            def __init__(self, text):
+                self.choices = [Choice(text)]
+
+        return Response(generated_text)
+
+    def _messages_to_prompt(self, messages) -> str:
+        """Convert OpenAI-style messages to Nemotron chat format."""
+        # Nemotron uses a simple format: system + user turns
+        parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                parts.append(f"<|system|>\n{content}")
+            elif role == "user":
+                parts.append(f"<|user|>\n{content}")
+            elif role == "assistant":
+                parts.append(f"<|assistant|>\n{content}")
+        parts.append("<|assistant|>\n")
+        return "\n".join(parts)
+
+
+def call_model_inference(client, template: dict) -> Optional[dict]:
+    """Call model via HF Inference API."""
     try:
         resp = client.chat_completion(
             messages=[
@@ -425,30 +528,60 @@ def call_model(client, template: dict) -> Optional[dict]:
         data = parse_output(raw)
         if not data or not validate(data):
             return None
-        return {
-            "id": template["id"],
-            "domain": template["domain"],
-            "domain_label": DOMAIN_LABELS.get(template["domain"], template["domain"]),
-            "difficulty": template["difficulty"],
-            "has_tools": template["has_tools"],
-            "scenario": {
-                "user_goal": data["user_goal"],
-                "system_prompt": data["system_prompt"],
-                "initial_message": data["initial_message"],
-            },
-            "ground_truth": {
-                "expected_response": data["expected_response"],
-                "expected_trajectory": data.get("expected_trajectory", []),
-                "assertions": data["assertions"],
-            },
-            "metadata": {
-                "generated_by": GENERATOR_MODEL,
-                "created_at": str(date.today()),
-                "tags": [template["domain"], template["difficulty"]],
-            },
-        }
-    except Exception:
+        return _build_result(template, data)
+    except Exception as e:
+        logger.warning("Inference API call failed for %s: %s", template["id"], e)
         return None
+
+
+def call_model_vllm(client: VLLMClient, template: dict) -> Optional[dict]:
+    """Call model via local vLLM."""
+    try:
+        resp = client.chat_completion(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a precise benchmark creator. Output ONLY valid JSON.",
+                },
+                {"role": "user", "content": make_prompt(template)},
+            ],
+            max_tokens=1200,
+            temperature=0.7,
+        )
+        raw = resp.choices[0].message.content or ""
+        data = parse_output(raw)
+        if not data or not validate(data):
+            return None
+        return _build_result(template, data)
+    except Exception as e:
+        logger.warning("vLLM call failed for %s: %s", template["id"], e)
+        return None
+
+
+def _build_result(template: dict, data: dict) -> dict:
+    """Build result dict from parsed data."""
+    return {
+        "id": template["id"],
+        "domain": template["domain"],
+        "domain_label": DOMAIN_LABELS.get(template["domain"], template["domain"]),
+        "difficulty": template["difficulty"],
+        "has_tools": template["has_tools"],
+        "scenario": {
+            "user_goal": data["user_goal"],
+            "system_prompt": data["system_prompt"],
+            "initial_message": data["initial_message"],
+        },
+        "ground_truth": {
+            "expected_response": data["expected_response"],
+            "expected_trajectory": data.get("expected_trajectory", []),
+            "assertions": data["assertions"],
+        },
+        "metadata": {
+            "generated_by": GENERATOR_MODEL if BACKEND == "inference" else VLLM_MODEL,
+            "created_at": str(date.today()),
+            "tags": [template["domain"], template["difficulty"]],
+        },
+    }
 
 
 def upload_to_hf(output_path: Path, hf_token: str = None):
@@ -481,22 +614,47 @@ def main():
         "--upload", action="store_true", help="Auto-upload to HF after generation"
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--backend",
+        choices=["inference", "vllm"],
+        default=BACKEND,
+        help="Backend to use: 'inference' (HF Inference API) or 'vllm' (local GPU via vLLM)",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Override model (env GENERATOR_MODEL or VLLM_MODEL)",
+    )
     args = parser.parse_args()
+
+    # Override model from CLI if provided
+    global GENERATOR_MODEL, VLLM_MODEL
+    if args.model:
+        if args.backend == "inference":
+            GENERATOR_MODEL = args.model
+        else:
+            VLLM_MODEL = args.model
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     templates = build_templates(args.domains, args.records_per_domain)
-    logger.info("🎯 %d records  |  model: %s", len(templates), GENERATOR_MODEL)
+    model_name = GENERATOR_MODEL if args.backend == "inference" else VLLM_MODEL
+    logger.info("🎯 %d records  |  backend: %s  |  model: %s", len(templates), args.backend, model_name)
 
     if args.dry_run:
         for t in templates:
             logger.info("  [%s] %s (%s) — %s...", t['domain'], t['id'], t['difficulty'], t['situation'][:60])
         return
 
-    from huggingface_hub import InferenceClient
-
-    client = InferenceClient(model=GENERATOR_MODEL)
+    # Initialize client based on backend
+    if args.backend == "inference":
+        from huggingface_hub import InferenceClient
+        client = InferenceClient(model=GENERATOR_MODEL)
+        call_fn = call_model_inference
+    else:
+        client = VLLMClient(model=VLLM_MODEL)
+        call_fn = call_model_vllm
 
     records, failed = [], []
 
@@ -514,7 +672,7 @@ def main():
     with open(output_path, "a", encoding="utf-8") as f:
         for t in templates:
             logger.info("  %s (%s/%s)... ", t['id'], t['domain'], t['difficulty'])
-            rec = call_model(client, t)
+            rec = call_fn(client, t)
             if rec:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
