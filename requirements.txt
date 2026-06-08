@@ -1,6 +1,9 @@
 # Gradio UI
 gradio>=6.14.0
 
+# Environment
+python-dotenv>=1.0.0
+
 # Charts
 plotly>=5.18.0
 
