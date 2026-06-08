@@ -21,3 +21,6 @@ uvicorn[standard]>=0.29.0
 # is also forced again in pre-requirements.txt for extra safety.
 huggingface_hub==0.36.2
 requests>=2.31.0
+
+# vLLM for local GPU inference (optional, for ZeroGPU)
+# vllm>=0.6.0
