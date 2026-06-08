@@ -24,6 +24,8 @@ Usage:
 
 import argparse
 import json
+import logging
+import os
 import re
 import sys
 import time
@@ -34,9 +36,19 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-GENERATOR_MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
-DATASET_REPO = "build-small-hackathon/agent-eval-golden-dataset"
-OUTPUT_FILE = Path(__file__).parent.parent / "dataset" / "golden_dataset.jsonl"
+from dotenv import load_dotenv
+load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16")
+DATASET_REPO = os.getenv("DATASET_REPO", "build-small-hackathon/agent-eval-golden-dataset")
+OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "dataset/golden_dataset.jsonl"))
 
 # ── Tech Interview Scenario Templates ────────────────────────────────────────
 
@@ -475,13 +487,11 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     templates = build_templates(args.domains, args.records_per_domain)
-    print(f"🎯 {len(templates)} records  |  model: {GENERATOR_MODEL}\n")
+    logger.info("🎯 %d records  |  model: %s", len(templates), GENERATOR_MODEL)
 
     if args.dry_run:
         for t in templates:
-            print(
-                f"  [{t['domain']}] {t['id']} ({t['difficulty']}) — {t['situation'][:60]}..."
-            )
+            logger.info("  [%s] %s (%s) — %s...", t['domain'], t['id'], t['difficulty'], t['situation'][:60])
         return
 
     from huggingface_hub import InferenceClient
@@ -498,36 +508,32 @@ def main():
                 r = json.loads(line)
                 existing_ids.add(r["id"])
                 records.append(r)
-        print(f"  Resuming — {len(records)} records already done\n")
+        logger.info("  Resuming — %d records already done", len(records))
         templates = [t for t in templates if t["id"] not in existing_ids]
 
     with open(output_path, "a", encoding="utf-8") as f:
         for t in templates:
-            print(
-                f"  {t['id']:20s} ({t['domain']}/{t['difficulty']})... ",
-                end="",
-                flush=True,
-            )
+            logger.info("  %s (%s/%s)... ", t['id'], t['domain'], t['difficulty'])
             rec = call_model(client, t)
             if rec:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 records.append(rec)
-                print("✓")
+                logger.info("✓")
             else:
                 failed.append(t["id"])
-                print("✗ parse failed")
+                logger.warning("✗ parse failed")
             time.sleep(0.4)
 
-    print(f"\n✅ {len(records)} generated  |  ✗ {len(failed)} failed")
+    logger.info("✅ %d generated  |  ✗ %d failed", len(records), len(failed))
     domains = Counter(r["domain"] for r in records)
     for d, c in sorted(domains.items()):
-        print(f"  {d:25s}: {c}")
+        logger.info("  %s: %d", d, c)
 
     if args.upload and records:
-        print("\n📤 Uploading to HF...")
+        logger.info("📤 Uploading to HF...")
         upload_to_hf(output_path)
-        print(f"✓ Uploaded → https://huggingface.co/datasets/{DATASET_REPO}")
+        logger.info("✓ Uploaded → https://huggingface.co/datasets/%s", DATASET_REPO)
 
 
 if __name__ == "__main__":
