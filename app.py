@@ -14,6 +14,7 @@ HuggingFace : app_file = app.py  (Gradio SDK)
 """
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -21,6 +22,15 @@ from pathlib import Path
 # Ensure src/ is importable whether run from repo root or HF Spaces
 _ROOT = Path(__file__).parent
 sys.path.insert(0, str(_ROOT))
+
+from dotenv import load_dotenv
+load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 import gradio as gr
 
@@ -1178,8 +1188,8 @@ if __name__ == "__main__":
     demo.launch(
         theme=gr.themes.Soft(primary_hue="purple", secondary_hue="blue"),
         css=_CSS,
-        server_name="0.0.0.0",
+        server_name=os.getenv("GRADIO_SERVER_NAME", "0.0.0.0"),
         server_port=int(os.getenv("PORT", 7860)),
-        share=False,
-        show_error=True,
+        share=os.getenv("GRADIO_SHARE", "false").lower() == "true",
+        show_error=os.getenv("GRADIO_SHOW_ERROR", "true").lower() == "true",
     )
