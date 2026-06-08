@@ -16,10 +16,20 @@ Endpoints:
     POST /evaluate/quick           — evaluate with default evaluators (minimal payload)
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+load_dotenv()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -312,8 +322,8 @@ def evaluate_quick(req: QuickEvaluateRequest):
 if __name__ == "__main__":
     uvicorn.run(
         "api:app",
-        host="0.0.0.0",
+        host=os.getenv("API_HOST", "0.0.0.0"),
         port=int(os.getenv("API_PORT", 8000)),
-        reload=bool(os.getenv("DEV", "")),
-        log_level="info",
+        reload=os.getenv("DEV", "false").lower() == "true",
+        log_level=os.getenv("LOG_LEVEL", "info").lower(),
     )
