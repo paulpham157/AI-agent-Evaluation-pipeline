@@ -122,6 +122,56 @@ python api.py                     # http://localhost:8000
 uvicorn api:app --reload --port 8000
 ```
 
+## Dataset Generation
+
+Generate golden benchmark datasets using one of three backends:
+
+### Backend: HF Inference API (default)
+
+```bash
+cp .env.example .env   # set HF_TOKEN
+python scripts/generate_golden_dataset.py
+```
+
+### Backend: vLLM (ZeroGPU)
+
+```bash
+python scripts/generate_golden_dataset.py --backend vllm
+```
+
+### Backend: llama.cpp (ZeroGPU)
+
+```bash
+pip install llama-cpp-python>=0.3.0
+python scripts/generate_golden_dataset.py --backend llama-cpp
+```
+
+The model (~2.8GB GGUF) is auto-downloaded from HuggingFace Hub on first run.
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--domains python_backend dsa` | Limit to specific domains |
+| `--records-per-domain 3` | Records per domain (default: 5) |
+| `--dry-run` | Preview without generating |
+| `--backend llama-cpp` | Backend: `inference`, `vllm`, or `llama-cpp` |
+| `--model nvidia/...` | Override model for the chosen backend |
+| `--upload` | Upload to HF dataset repo after generation |
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GENERATOR_BACKEND` | `inference` | Backend (`inference`, `vllm`, `llama-cpp`) |
+| `GENERATOR_MODEL` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16` | HF Inference API model |
+| `VLLM_MODEL` | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8` | vLLM model |
+| `LLAMA_MODEL_REPO` | `nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF` | llama.cpp GGUF repo |
+| `LLAMA_MODEL_FILE` | `NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf` | GGUF filename |
+| `LLAMA_N_CTX` | `16384` | Context length |
+| `LLAMA_N_GPU_LAYERS` | `-1` | GPU layers (-1 = all) |
+| `DATASET_REPO` | `build-small-hackathon/agent-eval-golden-dataset` | HF dataset target |
+
 ## Integration — Zero Changes to Your Agent
 
 ### Option 1 — Python Wrapper
