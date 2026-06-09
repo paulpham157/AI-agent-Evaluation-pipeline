@@ -31,9 +31,11 @@ pip install -r requirements.txt          # install deps (Gradio, FastAPI, Plotly
 python app.py                            # Gradio UI → http://localhost:7860
 python api.py                            # REST API → http://localhost:8000  (or)
 uvicorn api:app --reload --port 8000     # dev mode with autoreload
-python scripts/generate_golden_dataset.py --dry-run          # preview dataset generation
+python scripts/generate_golden_dataset.py --dry-run                         # preview dataset generation
 python scripts/generate_golden_dataset.py --domains python_backend --records-per-domain 3
-python scripts/generate_golden_dataset.py --upload           # generate + push to HF
+python scripts/generate_golden_dataset.py --upload                          # generate + push to HF
+python scripts/generate_golden_dataset.py --backend llama-cpp --dry-run     # llama.cpp backend (3rd backend)
+python scripts/generate_golden_dataset.py --backend vllm --dry-run          # vLLM backend
 ```
 
 ## Tests / Lint / Typecheck
