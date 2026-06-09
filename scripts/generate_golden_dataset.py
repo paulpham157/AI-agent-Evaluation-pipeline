@@ -5,9 +5,7 @@ Golden Dataset Generator — Tech Interview Domains
 Uses NVIDIA Nemotron models to generate golden (input, expected_output)
 pairs for evaluating AI agents conducting **tech job interviews**.
 
-Supports two backends:
-  - HF Inference API (default): nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
-  - vLLM on ZeroGPU: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
+Uses llama.cpp backend (default): nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF
 
 Domains:
   python_backend       — Python, FastAPI, async, OOP
@@ -24,7 +22,7 @@ Usage:
     python scripts/generate_golden_dataset.py --domains python_backend system_design
     python scripts/generate_golden_dataset.py --records-per-domain 3
     python scripts/generate_golden_dataset.py --dry-run
-    python scripts/generate_golden_dataset.py --backend vllm --model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
+    python scripts/generate_golden_dataset.py --model my-org/my-model
 """
 
 import argparse
@@ -52,14 +50,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── Config (env-driven) ──────────────────────────────────────────────────────
-GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16")
 DATASET_REPO = os.getenv("DATASET_REPO", "build-small-hackathon/agent-eval-golden-dataset")
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "dataset/golden_dataset.jsonl"))
-BACKEND = os.getenv("GENERATOR_BACKEND", "inference")  # "inference" | "vllm"
-VLLM_MODEL = os.getenv("VLLM_MODEL", GENERATOR_MODEL)
-VLLM_GPU_MEMORY_UTILIZATION = float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.9"))
-VLLM_MAX_MODEL_LEN = int(os.getenv("VLLM_MAX_MODEL_LEN", "4096"))
-VLLM_TENSOR_PARALLEL_SIZE = int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "1"))
+LLAMA_MODEL_REPO = os.getenv("LLAMA_MODEL_REPO", "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF")
+LLAMA_MODEL_FILE = os.getenv("LLAMA_MODEL_FILE", "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf")
+LLAMA_N_CTX = int(os.getenv("LLAMA_N_CTX", "16384"))
+LLAMA_N_GPU_LAYERS = int(os.getenv("LLAMA_N_GPU_LAYERS", "-1"))
+LLAMA_N_BATCH = int(os.getenv("LLAMA_N_BATCH", "512"))
 
 # ── Tech Interview Scenario Templates ────────────────────────────────────────
 
@@ -419,70 +416,67 @@ def validate(data: dict) -> bool:
     )
 
 
-# ─── vLLM Client (ZeroGPU) ────────────────────────────────────────────────────
+# ─── llama.cpp Client ──────────────────────────────────────────────
 
-class VLLMClient:
-    """vLLM client for local GPU inference on ZeroGPU."""
+class LlamaCppClient:
+    """llama.cpp client for local GPU inference via llama-cpp-python."""
 
     def __init__(
         self,
-        model: str = VLLM_MODEL,
-        gpu_memory_utilization: float = VLLM_GPU_MEMORY_UTILIZATION,
-        max_model_len: int = VLLM_MAX_MODEL_LEN,
-        tensor_parallel_size: int = VLLM_TENSOR_PARALLEL_SIZE,
+        model_repo: str = LLAMA_MODEL_REPO,
+        model_file: str = LLAMA_MODEL_FILE,
+        n_ctx: int = LLAMA_N_CTX,
+        n_gpu_layers: int = LLAMA_N_GPU_LAYERS,
+        n_batch: int = LLAMA_N_BATCH,
     ):
-        self.model = model
-        self.gpu_memory_utilization = gpu_memory_utilization
-        self.max_model_len = max_model_len
-        self.tensor_parallel_size = tensor_parallel_size
+        self.model_repo = model_repo
+        self.model_file = model_file
+        self.n_ctx = n_ctx
+        self.n_gpu_layers = n_gpu_layers
+        self.n_batch = n_batch
         self._llm = None
-        self._sampling_params = None
 
     def _init_llm(self):
         if self._llm is not None:
             return
         try:
-            from vllm import LLM, SamplingParams
+            from llama_cpp import Llama
         except ImportError as e:
-            raise RuntimeError("vllm not installed. Install with: pip install vllm") from e
+            raise RuntimeError("llama-cpp-python not installed. Install with: pip install llama-cpp-python") from e
 
-        logger.info("Initializing vLLM with model=%s", self.model)
-        self._llm = LLM(
-            model=self.model,
-            gpu_memory_utilization=self.gpu_memory_utilization,
-            max_model_len=self.max_model_len,
-            tensor_parallel_size=self.tensor_parallel_size,
-            dtype="auto",
-            trust_remote_code=True,
+        from huggingface_hub import hf_hub_download
+
+        logger.info("Downloading model %s/%s ...", self.model_repo, self.model_file)
+        model_path = hf_hub_download(
+            repo_id=self.model_repo,
+            filename=self.model_file,
         )
-        self._sampling_params = SamplingParams(
-            max_tokens=1200,
-            temperature=0.7,
-            top_p=0.95,
+        logger.info("Loading model from %s (n_ctx=%d, n_gpu_layers=%d, n_batch=%d) ...",
+                     model_path, self.n_ctx, self.n_gpu_layers, self.n_batch)
+        self._llm = Llama(
+            model_path=model_path,
+            n_ctx=self.n_ctx,
+            n_gpu_layers=self.n_gpu_layers,
+            n_batch=self.n_batch,
+            verbose=False,
         )
-        logger.info("vLLM initialized successfully")
+        logger.info("llama.cpp model loaded successfully")
 
     def chat_completion(self, messages, max_tokens=1200, temperature=0.7, top_p=0.95):
         self._init_llm()
 
-        # Convert messages to prompt format
         prompt = self._messages_to_prompt(messages)
 
-        # Update sampling params if needed
-        if max_tokens != 1200 or temperature != 0.7 or top_p != 0.95:
-            from vllm import SamplingParams
-            sampling_params = SamplingParams(
-                max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
-            )
-        else:
-            sampling_params = self._sampling_params
+        output = self._llm(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=["<|end|>"],
+        )
 
-        outputs = self._llm.generate([prompt], sampling_params)
-        generated_text = outputs[0].outputs[0].text
+        generated_text = output["choices"][0]["text"] if output.get("choices") else ""
 
-        # Return object compatible with InferenceClient response
         class Choice:
             def __init__(self, text):
                 self.message = type('Message', (), {'content': text})()
@@ -494,8 +488,6 @@ class VLLMClient:
         return Response(generated_text)
 
     def _messages_to_prompt(self, messages) -> str:
-        """Convert OpenAI-style messages to Nemotron chat format."""
-        # Nemotron uses a simple format: system + user turns
         parts = []
         for msg in messages:
             role = msg.get("role", "user")
@@ -510,8 +502,10 @@ class VLLMClient:
         return "\n".join(parts)
 
 
-def call_model_inference(client, template: dict) -> Optional[dict]:
-    """Call model via HF Inference API."""
+def call_model_llamacpp(client: LlamaCppClient, template: dict, model_name: str = None) -> Optional[dict]:
+    """Call model via local llama.cpp."""
+    if model_name is None:
+        model_name = f"{LLAMA_MODEL_REPO}/{LLAMA_MODEL_FILE}"
     try:
         resp = client.chat_completion(
             messages=[
@@ -528,38 +522,16 @@ def call_model_inference(client, template: dict) -> Optional[dict]:
         data = parse_output(raw)
         if not data or not validate(data):
             return None
-        return _build_result(template, data)
+        return _build_result(template, data, model_name=model_name)
     except Exception as e:
-        logger.warning("Inference API call failed for %s: %s", template["id"], e)
+        logger.warning("llama.cpp call failed for %s: %s", template["id"], e)
         return None
 
 
-def call_model_vllm(client: VLLMClient, template: dict) -> Optional[dict]:
-    """Call model via local vLLM."""
-    try:
-        resp = client.chat_completion(
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a precise benchmark creator. Output ONLY valid JSON.",
-                },
-                {"role": "user", "content": make_prompt(template)},
-            ],
-            max_tokens=1200,
-            temperature=0.7,
-        )
-        raw = resp.choices[0].message.content or ""
-        data = parse_output(raw)
-        if not data or not validate(data):
-            return None
-        return _build_result(template, data)
-    except Exception as e:
-        logger.warning("vLLM call failed for %s: %s", template["id"], e)
-        return None
-
-
-def _build_result(template: dict, data: dict) -> dict:
+def _build_result(template: dict, data: dict, model_name: str = None) -> dict:
     """Build result dict from parsed data."""
+    if model_name is None:
+        model_name = f"{LLAMA_MODEL_REPO}/{LLAMA_MODEL_FILE}"
     return {
         "id": template["id"],
         "domain": template["domain"],
@@ -577,7 +549,7 @@ def _build_result(template: dict, data: dict) -> dict:
             "assertions": data["assertions"],
         },
         "metadata": {
-            "generated_by": GENERATOR_MODEL if BACKEND == "inference" else VLLM_MODEL,
+            "generated_by": model_name,
             "created_at": str(date.today()),
             "tags": [template["domain"], template["difficulty"]],
         },
@@ -615,46 +587,32 @@ def main():
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
-        "--backend",
-        choices=["inference", "vllm"],
-        default=BACKEND,
-        help="Backend to use: 'inference' (HF Inference API) or 'vllm' (local GPU via vLLM)",
-    )
-    parser.add_argument(
         "--model",
         default=None,
-        help="Override model (env GENERATOR_MODEL or VLLM_MODEL)",
+        help="Override model (env LLAMA_MODEL_REPO)",
     )
     args = parser.parse_args()
 
     # Override model from CLI if provided
-    global GENERATOR_MODEL, VLLM_MODEL
+    global LLAMA_MODEL_REPO
     if args.model:
-        if args.backend == "inference":
-            GENERATOR_MODEL = args.model
-        else:
-            VLLM_MODEL = args.model
+        LLAMA_MODEL_REPO = args.model
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     templates = build_templates(args.domains, args.records_per_domain)
-    model_name = GENERATOR_MODEL if args.backend == "inference" else VLLM_MODEL
-    logger.info("🎯 %d records  |  backend: %s  |  model: %s", len(templates), args.backend, model_name)
+    model_name = f"{LLAMA_MODEL_REPO}/{LLAMA_MODEL_FILE}"
+    logger.info("🎯 %d records  |  model: %s", len(templates), model_name)
 
     if args.dry_run:
         for t in templates:
             logger.info("  [%s] %s (%s) — %s...", t['domain'], t['id'], t['difficulty'], t['situation'][:60])
         return
 
-    # Initialize client based on backend
-    if args.backend == "inference":
-        from huggingface_hub import InferenceClient
-        client = InferenceClient(model=GENERATOR_MODEL)
-        call_fn = call_model_inference
-    else:
-        client = VLLMClient(model=VLLM_MODEL)
-        call_fn = call_model_vllm
+    from functools import partial
+    client = LlamaCppClient(model_repo=LLAMA_MODEL_REPO)
+    call_fn = partial(call_model_llamacpp, model_name=f"{LLAMA_MODEL_REPO}/{LLAMA_MODEL_FILE}")
 
     records, failed = [], []
 
