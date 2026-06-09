@@ -61,6 +61,13 @@ def _zero_gpu_healthcheck() -> dict:
         return {"cuda_available": False, "note": "torch not installed"}
 
 
+from src.dataset_generator import (
+    DOMAIN_LABELS,
+    GENERATOR_MODEL,
+    SCENARIOS,
+    build_templates,
+    generate_dataset,
+)
 from src.evaluators import (
     ALL_EVALUATORS,
     DEFAULT_TRACE_EVALS,
@@ -230,6 +237,55 @@ def parse_and_preview(trace_json: str) -> str:
         return format_trace_tree(session)
     except Exception as e:
         return f"❌ **Parse error:** `{e}`\n\nCheck that your JSON is valid and contains `user_goal` + `traces`."
+
+
+# ─── Dataset generation functions ──────────────────────────────────────────────
+
+
+def run_generate(
+    domains: list,
+    records_per_domain: int,
+    backend: str,
+    model_name: str,
+    upload: bool,
+    hf_token: str,
+    progress=gr.Progress(track_tqdm=True),
+):
+    """Generate golden dataset records with UI progress."""
+    if not domains:
+        yield "<div style='color:#F44336;'>❌ Select at least one domain.</div>", ""
+        return
+
+    log_lines = []
+    log_lines.append(f"🚀 Starting generation: {len(domains)} domains × {records_per_domain} records")
+
+    def progress_callback(current: int, total: int, msg: str):
+        progress((current + 1) / total if total else 0, desc=f"Generating {msg}...")
+
+    records, failed, log = generate_dataset(
+        domains=domains,
+        records_per_domain=records_per_domain,
+        backend="inference" if backend == "Inference API" else "llama-cpp",
+        model_name=model_name.strip() or None,
+        upload=upload,
+        hf_token=hf_token.strip() or None,
+        progress_callback=progress_callback,
+    )
+
+    log_lines.extend(log)
+    passed = len(records) - len(failed)
+    color = "#4CAF50" if failed == 0 else "#FF9800"
+    result_html = f"""
+<div style="padding:16px;background:rgba(99,179,237,0.08);border-radius:8px;border:1px solid rgba(99,179,237,0.2);">
+  <div style="color:#63B3ED;font-weight:700;font-size:16px;margin-bottom:8px;">📊 Generation Complete</div>
+  <div style="color:#ccc;font-size:13px;">
+    ✅ Generated: <b style="color:#4CAF50;">{passed}</b>
+    &nbsp;·&nbsp; ✗ Failed: <b style="color:{color};">{len(failed)}</b>
+    &nbsp;·&nbsp; Total: <b>{len(records)}</b>
+  </div>
+</div>"""
+
+    yield result_html, "\n".join(log_lines)
 
 
 # ─── Benchmark functions ──────────────────────────────────────────────────────
@@ -1075,9 +1131,72 @@ with gr.Blocks(
                     label="Log", lines=10, interactive=False, buttons=["copy"]
                 )
 
-    # ── Tab 5: About ──────────────────────────────────────────────────────────
-    with gr.Tabs():
-        with gr.Tab("ℹ️ About"):
+        # ── Tab 5: Generate Dataset ────────────────────────────────────────────
+        with gr.Tab("📦 Generate Dataset"):
+            gr.Markdown("### 📦 Generate a golden benchmark dataset")
+            gr.Markdown(
+                "Use an LLM to generate golden (input, expected_output) records "
+                "for evaluating AI tech interviewers across multiple domains."
+            )
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("**🤖 Backend**")
+                    gen_backend = gr.Radio(
+                        choices=["Inference API", "llama.cpp"],
+                        value="Inference API",
+                        label="",
+                        info="Inference API (no GPU needed)  ·  llama.cpp (local GPU via llama-cpp-python)",
+                    )
+                    gen_hf_token = gr.Textbox(
+                        label="HF Token (for Inference API + upload)",
+                        placeholder="hf_...",
+                        type="password",
+                        visible=True,
+                    )
+                    gen_backend.change(
+                        fn=lambda b: gr.update(visible=(b == "Inference API")),
+                        inputs=gen_backend,
+                        outputs=gen_hf_token,
+                    )
+
+                    gr.Markdown("**📐 Settings**")
+                    gen_records = gr.Slider(
+                        minimum=1, maximum=5, step=1, value=3,
+                        label="Records per domain",
+                    )
+                    gen_model = gr.Textbox(
+                        label="Model (optional override)",
+                        placeholder="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+                    )
+                    gen_upload = gr.Checkbox(
+                        label="Upload to HF dataset repo after generation",
+                        value=False,
+                    )
+
+                with gr.Column(scale=2):
+                    gr.Markdown("**🌐 Domains**")
+                    gen_domains = gr.CheckboxGroup(
+                        choices=[(v, k) for k, v in DOMAIN_LABELS.items()],
+                        value=list(SCENARIOS.keys()),
+                        label="",
+                    )
+
+            gen_run_btn = gr.Button(
+                "🚀 Generate Dataset", variant="primary", elem_id="run-btn", size="lg"
+            )
+
+            with gr.Row():
+                gen_result = gr.HTML(
+                    "<div style='color:#888;padding:20px;text-align:center;'>"
+                    "Configure and click Generate to start.</div>",
+                    padding=True,
+                )
+
+            with gr.Row():
+                gen_log = gr.Textbox(
+                    label="Log", lines=10, interactive=False, buttons=["copy"]
+                )
             gr.Markdown(_HOW_IT_WORKS)
             gr.Markdown("""
 ### Evaluator Reference
@@ -1152,6 +1271,20 @@ with gr.Blocks(
             bm_threshold,
         ],
         outputs=[bm_results, bm_log],
+    )
+
+    # ── Wire: Generate Dataset ──────────────────────────────────────────────────
+    gen_run_btn.click(
+        fn=run_generate,
+        inputs=[
+            gen_domains,
+            gen_records,
+            gen_backend,
+            gen_model,
+            gen_upload,
+            gen_hf_token,
+        ],
+        outputs=[gen_result, gen_log],
     )
 
     # ── Wire: Eval runner ──────────────────────────────────────────────────────
