@@ -237,6 +237,11 @@ class LocalQwenJudge:
             logger.error(self._load_error)
 
     def score(self, prompt: str, max_tokens: int = 512) -> Tuple[float, str]:
+        """Score an evaluation prompt using the local GGUF model.
+
+        Falls back to (0.5, error_message) if model fails to load or
+        inference errors out — never raises.
+        """
         self._init_llm()
         if self._llm is None:
             err = self._load_error or "Local judge not available"

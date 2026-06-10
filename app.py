@@ -262,6 +262,7 @@ def run_generate(
     def progress_callback(current: int, total: int, msg: str):
         progress((current + 1) / total if total else 0, desc=f"Generating {msg}...")
 
+    # Delegate to shared generator — supports "inference" and "llama-cpp" backends
     records, failed, log = generate_dataset(
         domains=domains,
         records_per_domain=records_per_domain,
@@ -695,6 +696,7 @@ def run_evaluation(
                 warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM Judge (Inference API) selected but no HF Token — falling back to heuristic.</div>"
                 mode = EvalMode.HEURISTIC
         else:
+            # Local judge via llama.cpp — auto-downloads Qwen3-8B GGUF if path is empty
             path = local_judge_path.strip() or None
             judge = LocalQwenJudge(model_path=path)
             if not judge.available:
@@ -955,6 +957,7 @@ with gr.Blocks(
                         visible=True,
                     )
                     def _toggle_judge_fields(mode):
+                        """Show HF token for Inference API, model path for local judge."""
                         is_inference = mode == "LLM Judge (Inference API)"
                         is_local = mode == "LLM Judge (Local Qwen3 8B)"
                         return gr.update(visible=is_inference), gr.update(visible=is_local)

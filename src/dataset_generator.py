@@ -390,10 +390,16 @@ def validate(data: dict) -> bool:
     )
 
 
-# ─── llama.cpp Client ──────────────────────────────────────────────
+# ─── Backend: llama.cpp Client ─────────────────────────────────────
 
 
 class LlamaCppClient:
+    """llama.cpp client for local GPU inference via llama-cpp-python.
+
+    Downloads GGUF model from HF Hub on first use (lazy init).
+    Chat-compatible interface with the same .chat_completion() signature
+    as HF InferenceClient, so callers can swap backends transparently.
+    """
     """llama.cpp client for local GPU inference via llama-cpp-python."""
 
     def __init__(
