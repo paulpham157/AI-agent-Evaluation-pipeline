@@ -17,6 +17,7 @@ import gc
 import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -142,6 +143,15 @@ def save_config(
         else:
             status.append("⚠️ Judge: Inference API — no HF token, will use heuristic")
     elif judge_mode == "LLM Judge (Local Qwen3 8B)":
+        try:
+            import llama_cpp  # noqa: F401
+        except ImportError:
+            status.append("⏳ Installing llama-cpp-python (compiling may take 2–3 min)…")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "llama-cpp-python>=0.3.0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         path = local_judge_path.strip() or None
         judge = LocalQwenJudge(model_path=path)
         judge._init_llm()
@@ -158,6 +168,17 @@ def save_config(
     if gen_backend == "llama-cpp":
         model = gen_model.strip() or None
         from src.dataset_generator import LlamaCppClient
+
+        try:
+            import llama_cpp  # noqa: F401 — check if installed
+        except ImportError:
+            status.append("⏳ Installing llama-cpp-python (compiling may take 2–3 min)…")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "llama-cpp-python>=0.3.0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
         client = LlamaCppClient(model_repo=model) if model else LlamaCppClient()
         try:
             client._init_llm()
