@@ -496,7 +496,7 @@ def call_model_llamacpp(client: LlamaCppClient, template: dict, model_name: str 
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a precise benchmark creator. Output ONLY valid JSON.",
+                    "content": "You are a precise benchmark creator. Output ONLY valid JSON. Do NOT include any reasoning or think blocks.",
                 },
                 {"role": "user", "content": make_prompt(template)},
             ],
@@ -506,6 +506,7 @@ def call_model_llamacpp(client: LlamaCppClient, template: dict, model_name: str 
         raw = resp.choices[0].message.content or ""
         data = parse_output(raw)
         if not data or not validate(data):
+            print(f"[DEBUG-llamacpp] {template['id']}: parse failed, raw ({len(raw)} chars): {raw[:1500]!r}")
             return None
         return _build_result(template, data, model_name=model_name)
     except Exception as e:
