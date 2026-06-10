@@ -976,81 +976,7 @@ with gr.Blocks(
     gr.HTML(_TITLE_HTML, padding=True)
 
     with gr.Tabs():
-        # ── Tab 1: Load Trace ─────────────────────────────────────────────
-        with gr.Tab("📥 Load Trace"):
-            gr.Markdown("### Step 1 — Provide your agent trace")
-            gr.Markdown(
-                "Paste a JSON trace below, upload a file, or click a demo button to start immediately."
-            )
-
-            with gr.Row(equal_height=False):
-                btn_simple = gr.Button("🎓 Simple Q&A", size="sm", variant="secondary")
-                btn_tool = gr.Button("🔧 Tool Calling", size="sm", variant="secondary")
-                btn_multi = gr.Button(
-                    "🔄 Multi-turn + Tools", size="sm", variant="secondary"
-                )
-
-            trace_input = gr.Code(
-                label="Agent Trace (JSON)",
-                language="json",
-                value=DEMO_MULTI_TURN,
-                lines=22,
-            )
-
-            with gr.Accordion("🌲 Trace Preview", open=True):
-                preview_md = gr.Markdown(parse_and_preview(DEMO_MULTI_TURN))
-
-            # Wire demo buttons
-            btn_simple.click(
-                lambda: (DEMO_SIMPLE_QA, parse_and_preview(DEMO_SIMPLE_QA)),
-                None,
-                [trace_input, preview_md],
-            )
-            btn_tool.click(
-                lambda: (DEMO_TOOL_CALLING, parse_and_preview(DEMO_TOOL_CALLING)),
-                None,
-                [trace_input, preview_md],
-            )
-            btn_multi.click(
-                lambda: (DEMO_MULTI_TURN, parse_and_preview(DEMO_MULTI_TURN)),
-                None,
-                [trace_input, preview_md],
-            )
-            trace_input.change(parse_and_preview, trace_input, preview_md)
-
-            with gr.Accordion("📖 JSON Schema Reference", open=False):
-                gr.Code(
-                    value=json.dumps(
-                        {
-                            "session_id": "my_session",
-                            "user_goal": "Describe the overall goal of the user",
-                            "system_prompt": "(optional) System instructions given to the agent",
-                            "traces": [
-                                {
-                                    "trace_id": "t1",
-                                    "user_input": "User's message",
-                                    "agent_response": "Agent's reply",
-                                    "retrieved_context": "(optional) RAG context",
-                                    "spans": [
-                                        {
-                                            "span_id": "s1",
-                                            "span_type": "TOOL_CALL",
-                                            "tool_name": "my_tool",
-                                            "tool_input": {"param": "value"},
-                                            "tool_output": "Tool result string",
-                                            "duration_ms": 250,
-                                        }
-                                    ],
-                                }
-                            ],
-                        },
-                        indent=2,
-                    ),
-                    language="json",
-                    lines=10,
-                )
-
-        # ── Tab 2: Configure ──────────────────────────────────────────────
+        # ── Tab 1: Configure ──────────────────────────────────────────────
         with gr.Tab("⚙️ Configure"):
             gr.Markdown("### Step 1 — Generate Dataset")
             gr.Markdown(
@@ -1209,7 +1135,61 @@ with gr.Blocks(
                             lines=4,
                         )
 
-            gr.Markdown("")
+            gr.Markdown("---")
+            gr.Markdown("### Step 3 — Provide Trace & Run Evaluation")
+            gr.Markdown(
+                "Paste a JSON trace below or click a demo button to load an example."
+            )
+
+            with gr.Row(equal_height=False):
+                btn_simple = gr.Button("🎓 Simple Q&A", size="sm", variant="secondary")
+                btn_tool = gr.Button("🔧 Tool Calling", size="sm", variant="secondary")
+                btn_multi = gr.Button(
+                    "🔄 Multi-turn + Tools", size="sm", variant="secondary"
+                )
+
+            trace_input = gr.Code(
+                label="Agent Trace (JSON)",
+                language="json",
+                value=DEMO_MULTI_TURN,
+                lines=18,
+            )
+
+            with gr.Accordion("🌲 Trace Preview", open=True):
+                preview_md = gr.Markdown(parse_and_preview(DEMO_MULTI_TURN))
+
+            with gr.Accordion("📖 JSON Schema Reference", open=False):
+                gr.Code(
+                    value=json.dumps(
+                        {
+                            "session_id": "my_session",
+                            "user_goal": "Describe the overall goal of the user",
+                            "system_prompt": "(optional) System instructions given to the agent",
+                            "traces": [
+                                {
+                                    "trace_id": "t1",
+                                    "user_input": "User's message",
+                                    "agent_response": "Agent's reply",
+                                    "retrieved_context": "(optional) RAG context",
+                                    "spans": [
+                                        {
+                                            "span_id": "s1",
+                                            "span_type": "TOOL_CALL",
+                                            "tool_name": "my_tool",
+                                            "tool_input": {"param": "value"},
+                                            "tool_output": "Tool result string",
+                                            "duration_ms": 250,
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                        indent=2,
+                    ),
+                    language="json",
+                    lines=10,
+                )
+
             run_btn = gr.Button(
                 "▶ Run Evaluation", variant="primary", elem_id="run-btn", size="lg"
             )
@@ -1255,6 +1235,23 @@ with gr.Blocks(
     )
 
     # ── Wire: Eval runner ──────────────────────────────────────────────────────
+    btn_simple.click(
+        lambda: (DEMO_SIMPLE_QA, parse_and_preview(DEMO_SIMPLE_QA)),
+        None,
+        [trace_input, preview_md],
+    )
+    btn_tool.click(
+        lambda: (DEMO_TOOL_CALLING, parse_and_preview(DEMO_TOOL_CALLING)),
+        None,
+        [trace_input, preview_md],
+    )
+    btn_multi.click(
+        lambda: (DEMO_MULTI_TURN, parse_and_preview(DEMO_MULTI_TURN)),
+        None,
+        [trace_input, preview_md],
+    )
+    trace_input.change(parse_and_preview, trace_input, preview_md)
+
     run_btn.click(
         fn=run_evaluation,
         inputs=[
