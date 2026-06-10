@@ -91,7 +91,6 @@ _app_state = {
     "judge": None,
     "gen_backend": "inference",
     "gen_client": None,
-    "gen_model": None,
     "gen_hf_token": None,
 }
 
@@ -119,9 +118,7 @@ def unload_models():
 def save_config(
     judge_mode: str,
     hf_token: str,
-    local_judge_path: str,
     gen_backend: str,
-    gen_model: str,
     gen_hf_token: str,
 ) -> str:
     """Validate and load models per user selection. Returns status HTML."""
@@ -129,7 +126,6 @@ def save_config(
     status = []
     _app_state["judge_mode"] = "heuristic"
     _app_state["gen_backend"] = "inference"
-    _app_state["gen_model"] = gen_model.strip() or None
     _app_state["gen_hf_token"] = gen_hf_token.strip() or None
 
     # ── Load judge ─────────────────────────────────────────────────────
@@ -152,8 +148,7 @@ def save_config(
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        path = local_judge_path.strip() or None
-        judge = LocalQwenJudge(model_path=path)
+        judge = LocalQwenJudge(model_path=None)
         judge._init_llm()
         if judge.available:
             _app_state["judge"] = judge
@@ -166,11 +161,10 @@ def save_config(
 
     # ── Load dataset generator ─────────────────────────────────────────
     if gen_backend == "llama-cpp":
-        model = gen_model.strip() or None
         from src.dataset_generator import LlamaCppClient
 
         try:
-            import llama_cpp  # noqa: F401 — check if installed
+            import llama_cpp  # noqa: F401
         except ImportError:
             status.append("⏳ Installing llama-cpp-python (compiling may take 2–3 min)…")
             subprocess.check_call(
@@ -179,12 +173,11 @@ def save_config(
                 stderr=subprocess.DEVNULL,
             )
 
-        client = LlamaCppClient(model_repo=model) if model else LlamaCppClient()
+        client = LlamaCppClient()
         try:
             client._init_llm()
             _app_state["gen_client"] = client
             _app_state["gen_backend"] = "llama-cpp"
-            _app_state["gen_model"] = model
             status.append("✅ Generator: llama.cpp model loaded")
         except RuntimeError as e:
             status.append(f"❌ Generator: llama.cpp not available — {e}")
@@ -397,10 +390,8 @@ def run_generate(
     if backend == "llama-cpp" and _app_state["gen_client"] is not None:
         kwargs["client"] = _app_state["gen_client"]
         kwargs["backend"] = "llama-cpp"
-        kwargs["model_name"] = _app_state["gen_model"]
     elif backend == "inference":
         kwargs["backend"] = "inference"
-        kwargs["model_name"] = _app_state["gen_model"]
     else:
         kwargs["backend"] = backend
 
@@ -773,7 +764,6 @@ def run_evaluation(
     k_trials: int,
     eval_mode_radio: str,
     hf_token: str,
-    local_judge_path: str,
     exp_response: str,
     exp_trajectory: str,
     assertions_text: str,
@@ -832,8 +822,7 @@ def run_evaluation(
                 warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM Judge (Inference API) selected but no HF Token — falling back to heuristic.</div>"
                 mode = EvalMode.HEURISTIC
         else:
-            path = local_judge_path.strip() or None
-            judge = LocalQwenJudge(model_path=path)
+            judge = LocalQwenJudge(model_path=None)
             if not judge.available:
                 judge._init_llm()
             if not judge.available:
@@ -1079,19 +1068,14 @@ with gr.Blocks(
                         type="password",
                         visible=False,
                     )
-                    cfg_judge_local_path = gr.Textbox(
-                        label="GGUF model path (for local judge)",
-                        placeholder="/path/to/model.gguf  (leave empty for auto-download)",
-                        visible=True,
-                    )
-                    def _toggle_judge_fields(mode):
-                        is_inference = mode == "LLM Judge (Inference API)"
-                        is_local = mode == "LLM Judge (Local Qwen3 8B)"
-                        return gr.update(visible=is_inference), gr.update(visible=is_local)
                     cfg_judge_mode.change(
-                        fn=_toggle_judge_fields,
+                        fn=lambda mode: gr.update(visible=(mode == "LLM Judge (Inference API)")),
                         inputs=cfg_judge_mode,
-                        outputs=[cfg_judge_hf_token, cfg_judge_local_path],
+                        outputs=cfg_judge_hf_token,
+                    )
+                    gr.Markdown(
+                        "> Local judge auto-downloads **Qwen3-8B Q4_K_M** (~5GB) from "
+                        "[Qwen/Qwen3-8B-GGUF](https://huggingface.co/Qwen/Qwen3-8B-GGUF) on first use."
                     )
 
                 with gr.Column(scale=1):
@@ -1100,10 +1084,6 @@ with gr.Blocks(
                         choices=["Inference API", "llama.cpp"],
                         value="Inference API",
                         label="",
-                    )
-                    cfg_gen_model = gr.Textbox(
-                        label="Model (optional override)",
-                        placeholder="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
                     )
                     cfg_gen_hf_token = gr.Textbox(
                         label="HF Token (for Inference API + upload)",
@@ -1450,9 +1430,7 @@ with gr.Blocks(
         inputs=[
             cfg_judge_mode,
             cfg_judge_hf_token,
-            cfg_judge_local_path,
             cfg_gen_backend,
-            cfg_gen_model,
             cfg_gen_hf_token,
         ],
         outputs=cfg_status,
@@ -1484,7 +1462,6 @@ with gr.Blocks(
             k_trials,
             cfg_judge_mode,
             cfg_judge_hf_token,
-            cfg_judge_local_path,
             exp_response,
             exp_trajectory,
             assertions_text,
