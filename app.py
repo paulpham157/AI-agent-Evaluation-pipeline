@@ -75,7 +75,7 @@ from src.evaluators import (
     SPAN_EVALUATORS,
     TRACE_EVALUATORS,
 )
-from src.llm_judge import LLMJudge
+from src.llm_judge import LLMJudge, LocalQwenJudge
 from src.models import EvalLevel, EvalMode, GroundTruth
 from src.parser import format_trace_tree, parse_trace
 from src.reliability import compute_reliability
@@ -639,6 +639,7 @@ def run_evaluation(
     k_trials: int,
     eval_mode_radio: str,
     hf_token: str,
+    local_judge_path: str,
     exp_response: str,
     exp_trajectory: str,
     assertions_text: str,
@@ -683,15 +684,24 @@ def run_evaluation(
         return warn, None, None, None, warn
 
     # ── 4. Build LLM judge (if requested) ────────────────────────────────
-    use_llm = eval_mode_radio == "LLM Judge (QwQ-32B)"
+    use_llm = eval_mode_radio.startswith("LLM Judge")
     mode = EvalMode.LLM if use_llm else EvalMode.HEURISTIC
     judge = None
     if use_llm:
-        token = hf_token.strip() or None
-        judge = LLMJudge(api_key=token)
-        if not judge.available:
-            warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM mode selected but no HF Token provided — falling back to heuritic.</div>"
-            mode = EvalMode.HEURISTIC
+        if eval_mode_radio == "LLM Judge (Inference API)":
+            token = hf_token.strip() or None
+            judge = LLMJudge(api_key=token)
+            if not judge.available:
+                warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM Judge (Inference API) selected but no HF Token — falling back to heuristic.</div>"
+                mode = EvalMode.HEURISTIC
+        else:
+            path = local_judge_path.strip() or None
+            judge = LocalQwenJudge(model_path=path)
+            if not judge.available:
+                judge._init_llm()
+            if not judge.available:
+                warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM Judge (Local) selected but model could not load — falling back to heuristic.</div>"
+                mode = EvalMode.HEURISTIC
 
     # ── 5. Run evaluation (single or k trials) ─────────────────────────────
     progress(0.15, desc="Running evaluators…")
@@ -929,21 +939,29 @@ with gr.Blocks(
 
                     gr.Markdown("**🤖 Evaluation Mode**")
                     eval_mode_radio = gr.Radio(
-                        choices=["Heuristic (offline)", "LLM Judge (QwQ-32B)"],
+                        choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen 7B)"],
                         value="Heuristic (offline)",
                         label="",
-                        info="LLM mode requires a HuggingFace token with QwQ-32B access",
                     )
                     hf_token = gr.Textbox(
-                        label="HF Token",
+                        label="HF Token (for Inference API judge)",
                         placeholder="hf_...",
                         type="password",
                         visible=False,
                     )
+                    local_judge_path = gr.Textbox(
+                        label="GGUF model path (for local judge)",
+                        placeholder="/path/to/model.gguf  (leave empty for auto-download)",
+                        visible=False,
+                    )
+                    def _toggle_judge_fields(mode):
+                        is_inference = mode == "LLM Judge (Inference API)"
+                        is_local = mode == "LLM Judge (Local Qwen 7B)"
+                        return gr.update(visible=is_inference), gr.update(visible=is_local)
                     eval_mode_radio.change(
-                        fn=lambda m: gr.update(visible=(m == "LLM Judge (QwQ-32B)")),
+                        fn=_toggle_judge_fields,
                         inputs=eval_mode_radio,
-                        outputs=hf_token,
+                        outputs=[hf_token, local_judge_path],
                     )
 
                     gr.Markdown("**Pass Threshold**")
@@ -1302,6 +1320,7 @@ with gr.Blocks(
             k_trials,
             eval_mode_radio,
             hf_token,
+            local_judge_path,
             exp_response,
             exp_trajectory,
             assertions_text,

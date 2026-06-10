@@ -15,7 +15,7 @@ src/
   parser.py                       # JSON trace → Session objects
   evaluators.py                   # All 14 evaluators (1 session + 11 trace + 2 span)
   runner.py                       # EvalRunner orchestrator
-  llm_judge.py                    # LLMJudge (HF Inference API, optional dep)
+  llm_judge.py                    # LLMJudge (Inference API) + LocalQwenJudge (llama.cpp), optional dep
   reliability.py                  # pass@k / pass^k metrics
   visualizer.py                   # Plotly charts
   wrapper.py                      # SessionTracer context manager + @trace_agent decorator
@@ -52,7 +52,7 @@ python scripts/generate_golden_dataset.py --backend vllm --dry-run          # vL
   from pathlib import Path
   sys.path.insert(0, str(Path(__file__).parent))   # or .parent.parent for scripts/
   ```
-- `llm_judge` is an **optional** dependency — guard it with `try: from .llm_judge import LLMJudge as _LLMJudge\nexcept ImportError: _LLMJudge = None` (see `runner.py:19-22`). Use the same pattern for any new optional dep.
+- `llm_judge` module is always importable; internal deps are lazy (InferenceClient in `LLMJudge`, llama-cpp-python in `LocalQwenJudge._init_llm`). For new optional deps, guard the import inside the method/class, not at module top level.
 - Prefer **lazy imports inside methods** to break circular dependencies (see `wrapper.py:194-195`, `app.py`'s HF imports).
 - `from __future__ import annotations` is **not** used — match the existing style (no `str | None`, use `Optional[str]`).
 
