@@ -161,8 +161,8 @@ class LocalQwenJudge:
         Batch size (default 512).
     """
 
-    DEFAULT_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
-    DEFAULT_FILE = "qwen2.5-7b-instruct-q4_k_m.gguf"
+    DEFAULT_REPO = "Qwen/Qwen3-8B-GGUF"
+    DEFAULT_FILE = "Qwen3-8B-Q4_K_M.gguf"
 
     def __init__(
         self,
@@ -257,9 +257,12 @@ class LocalQwenJudge:
     @staticmethod
     def _format_prompt(prompt: str) -> str:
         return (
-            "<|system|>\n"
+            "<|im_start|>system\n"
             "You are a precise AI quality evaluator. "
             "Think carefully, then output ONLY valid JSON on the last line.\n"
-            f"<|user|>\n{prompt}\n"
-            "<|assistant|>\n"
+            "<|im_end|>\n"
+            "<|im_start|>user\n"
+            f"{prompt}\n"
+            "<|im_end|>\n"
+            "<|im_start|>assistant\n"
         )

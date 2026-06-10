@@ -939,7 +939,7 @@ with gr.Blocks(
 
                     gr.Markdown("**🤖 Evaluation Mode**")
                     eval_mode_radio = gr.Radio(
-                        choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen 7B)"],
+                        choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen3 8B)"],
                         value="Heuristic (offline)",
                         label="",
                     )
@@ -956,7 +956,7 @@ with gr.Blocks(
                     )
                     def _toggle_judge_fields(mode):
                         is_inference = mode == "LLM Judge (Inference API)"
-                        is_local = mode == "LLM Judge (Local Qwen 7B)"
+                        is_local = mode == "LLM Judge (Local Qwen3 8B)"
                         return gr.update(visible=is_inference), gr.update(visible=is_local)
                     eval_mode_radio.change(
                         fn=_toggle_judge_fields,

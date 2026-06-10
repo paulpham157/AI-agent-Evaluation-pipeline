@@ -1,10 +1,10 @@
-# Plan — Local Judge: Qwen2.5-7B-Instruct (GGUF Q4)
+# Plan — Local Judge: Qwen3-8B (GGUF Q4_K_M, ~5GB)
 
 ## Tổng quan
 
 Thêm khả năng dùng **LLM judge chạy local** (via llama.cpp / llama-cpp-python) làm backend cho evaluation mode "LLM Judge", song song với HF Inference API hiện tại.
 
-Model mục tiêu: **Qwen2.5-7B-Instruct** (GGUF Q4_K_M, ~4.5GB RAM) — đủ nhẹ chạy trên ZeroGPU A100 shared, đủ thông minh để làm judge.
+Model mục tiêu: **Qwen3-8B-Instruct** (GGUF Q4_K_M, ~5GB) — thế hệ mới nhất của Qwen, hỗ trợ `/think` toggle, instruction-following xuất sắc, đủ nhẹ chạy trên ZeroGPU A100 shared.
 
 ---
 
@@ -93,11 +93,13 @@ LOCAL_JUDGE_N_GPU_LAYERS=-1         # -1 = all layers on GPU
 ## HF model
 
 ```
-https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF
-→ File: qwen2.5-7b-instruct-q4_k_m.gguf
+https://huggingface.co/Qwen/Qwen3-8B-GGUF
+→ File: Qwen3-8B-Q4_K_M.gguf (5.03 GB)
 ```
 
-Có thể auto-download bằng `hf_hub_download(repo_id="Qwen/Qwen2.5-7B-Instruct-GGUF", filename="qwen2.5-7b-instruct-q4_k_m.gguf")`.
+Có thể auto-download bằng `hf_hub_download(repo_id="Qwen/Qwen3-8B-GGUF", filename="Qwen3-8B-Q4_K_M.gguf")`.
+
+> **Lưu ý:** Qwen3-8B dùng chat template `<|im_start|>` / `<|im_end|>`, khác với Qwen2.5 (`<|system|>`). Template đã được cập nhật trong `LocalQwenJudge._format_prompt()`.
 
 ---
 
