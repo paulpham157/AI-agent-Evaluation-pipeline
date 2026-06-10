@@ -363,6 +363,7 @@ def make_prompt(template: dict) -> str:
 
 def parse_output(text: str) -> Optional[dict]:
     text = re.sub(r"```(?:json)?\s*", "", text).strip()
+    text = re.sub(r"<think>.*?(?:</think>|$)", "", text, flags=re.DOTALL).strip()
     for m in reversed(list(re.finditer(r"\{[\s\S]{40,}\}", text))):
         try:
             return json.loads(m.group())
