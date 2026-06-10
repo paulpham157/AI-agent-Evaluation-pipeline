@@ -453,7 +453,7 @@ class LlamaCppClient:
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            stop=["<|end|>"],
+            stop=["<|im_end|>"],
         )
 
         generated_text = output["choices"][0]["text"] if output.get("choices") else ""
@@ -474,12 +474,12 @@ class LlamaCppClient:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             if role == "system":
-                parts.append(f"<|system|>\n{content}")
+                parts.append(f"<|im_start|>system\n{content}<|im_end|>")
             elif role == "user":
-                parts.append(f"<|user|>\n{content}")
+                parts.append(f"<|im_start|>user\n{content}<|im_end|>")
             elif role == "assistant":
-                parts.append(f"<|assistant|>\n{content}")
-        parts.append("<|assistant|>\n")
+                parts.append(f"<|im_start|>assistant\n{content}<|im_end|>")
+        parts.append("<|im_start|>assistant\n")
         return "\n".join(parts)
 
 
