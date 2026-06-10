@@ -1052,266 +1052,9 @@ with gr.Blocks(
 
         # ── Tab 2: Configure ──────────────────────────────────────────────
         with gr.Tab("⚙️ Configure"):
-            gr.Markdown("### Step 1 — Model Configuration")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("**🤖 LLM Judge Backend**")
-                    cfg_judge_mode = gr.Radio(
-                        choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen3 8B)"],
-                        value="LLM Judge (Local Qwen3 8B)",
-                        label="",
-                    )
-                    cfg_judge_hf_token = gr.Textbox(
-                        label="HF Token (for Inference API judge)",
-                        placeholder="hf_...",
-                        type="password",
-                        visible=False,
-                    )
-                    cfg_judge_mode.change(
-                        fn=lambda mode: gr.update(visible=(mode == "LLM Judge (Inference API)")),
-                        inputs=cfg_judge_mode,
-                        outputs=cfg_judge_hf_token,
-                    )
-                    gr.Markdown(
-                        "> Local judge auto-downloads **Qwen3-8B Q4_K_M** (~5GB) from "
-                        "[Qwen/Qwen3-8B-GGUF](https://huggingface.co/Qwen/Qwen3-8B-GGUF) on first use."
-                    )
-
-                with gr.Column(scale=1):
-                    gr.Markdown("**📦 Dataset Generator Backend**")
-                    cfg_gen_backend = gr.Radio(
-                        choices=["Inference API", "llama.cpp"],
-                        value="llama.cpp",
-                        label="",
-                    )
-                    cfg_gen_hf_token = gr.Textbox(
-                        label="HF Token (for Inference API + upload)",
-                        placeholder="hf_...",
-                        type="password",
-                        visible=False,
-                    )
-                    def _toggle_gen_fields(backend):
-                        return gr.update(visible=(backend == "Inference API"))
-                    cfg_gen_backend.change(
-                        fn=_toggle_gen_fields,
-                        inputs=cfg_gen_backend,
-                        outputs=cfg_gen_hf_token,
-                    )
-
-            cfg_save_btn = gr.Button("💾 Save & Load Models", variant="primary", size="lg")
-            cfg_status = gr.HTML(
-                "<div style='color:#888;padding:10px;text-align:center;'>"
-                "Configure models above and click Save to load.</div>",
-                padding=True,
-            )
-
-            gr.Markdown("---")
-            gr.Markdown("### Step 2 — Evaluator Selection & Settings")
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("**Evaluation Levels**")
-                    use_session = gr.Checkbox(label="📦 Session Level", value=True)
-                    use_trace = gr.Checkbox(label="🔄 Trace Level", value=True)
-                    use_span = gr.Checkbox(
-                        label="🔧 Span Level (tool calls)", value=True
-                    )
-
-                    gr.Markdown("**Pass Threshold**")
-                    threshold = gr.Slider(
-                        minimum=0.30,
-                        maximum=0.90,
-                        step=0.05,
-                        value=0.60,
-                        label="Minimum score to pass",
-                        info="Scores ≥ threshold are marked ✅ passed",
-                    )
-
-                    gr.Markdown("**🔄 Reliability Testing (pass@k / pass^k)**")
-                    k_trials = gr.Slider(
-                        minimum=1,
-                        maximum=5,
-                        step=1,
-                        value=1,
-                        label="Trials (k)",
-                        info="k=1 → standard mode. k>1 → runs multiple trials, shows pass@k & pass^k.",
-                    )
-
-                with gr.Column(scale=2):
-                    gr.Markdown("**📦 Session Evaluators** *(once per session)*")
-                    sel_session = gr.CheckboxGroup(
-                        choices=_SESS_CHOICES,
-                        value=SESSION_EVALUATORS,
-                        label="",
-                    )
-
-                    gr.Markdown(
-                        "**🔄 Trace Evaluators** *(once per conversation turn)*"
-                    )
-                    sel_trace = gr.CheckboxGroup(
-                        choices=_TRACE_CHOICES,
-                        value=DEFAULT_TRACE_EVALS,
-                        label="",
-                    )
-
-                    gr.Markdown("**🔧 Span Evaluators** *(once per tool call)*")
-                    sel_span = gr.CheckboxGroup(
-                        choices=_SPAN_CHOICES,
-                        value=SPAN_EVALUATORS,
-                        label="",
-                    )
-
-            with gr.Accordion(
-                "📋 Ground Truth (Optional — improves scoring precision)", open=False
-            ):
-                gr.Markdown(
-                    "Providing reference inputs enables ground-truth-based evaluation "
-                    "(mirrors AgentCore's `expected_response`, `expected_trajectory`, and `assertions`)."
-                )
-                with gr.Row():
-                    with gr.Column():
-                        exp_response = gr.Textbox(
-                            label="Expected Response",
-                            placeholder="What should the final agent response look like?",
-                            lines=3,
-                        )
-                        exp_trajectory = gr.Textbox(
-                            label="Expected Tool Trajectory (comma-separated tool names)",
-                            placeholder="search_restaurants, create_reservation",
-                        )
-                    with gr.Column():
-                        assertions_text = gr.Textbox(
-                            label="Assertions (one per line)",
-                            placeholder="A restaurant reservation was made\nConfirmation number was provided\nThe restaurant matches user preferences",
-                            lines=4,
-                        )
-
-            gr.Markdown("")
-            run_btn = gr.Button(
-                "▶ Run Evaluation", variant="primary", elem_id="run-btn", size="lg"
-            )
-
-        # ── Tab 3: Results ────────────────────────────────────────────────
-        with gr.Tab("📊 Results"):
-            overall_banner = gr.HTML(
-                "<div style='text-align:center;color:rgba(150,150,150,0.6);padding:40px;'>"
-                "← Configure and run evaluation to see results here</div>",
-                padding=True,
-            )
-
-            with gr.Row():
-                radar_chart = gr.Plot(label="🕸️ Evaluator Scores (Radar)", scale=1)
-                bar_chart = gr.Plot(label="📊 Score Breakdown by Evaluator", scale=1)
-
-            heatmap_chart = gr.Plot(label="🗋️ Score Heatmap: Evaluators × Turns")
-
-            reliability_html = gr.HTML("", padding=True)
-            score_cards_html = gr.HTML("", padding=True)
-
-        # ── Tab 4: Benchmark ───────────────────────────────────────────────
-        with gr.Tab("🧪 Benchmark"):
-            gr.Markdown("### 🧪 Benchmark — evaluate your agent against a dataset")
+            gr.Markdown("### Step 1 — Generate Dataset")
             gr.Markdown(
-                "Each record's `initial_message` is POSTed to your agent (OpenAI-compatible "
-                "chat completions endpoint), the response is parsed into a trace, and all "
-                "selected evaluators run. Ground truth from the record is used automatically."
-            )
-
-            with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("**📦 Dataset**")
-                    bm_dataset_url = gr.Textbox(
-                        label="HF Dataset URL (loads data/golden_dataset.jsonl)",
-                        value="https://huggingface.co/datasets/build-small-hackathon/agent-eval-golden-dataset",
-                        placeholder="https://huggingface.co/datasets/...",
-                    )
-                    with gr.Accordion("📝 Or paste JSONL directly", open=False):
-                        bm_paste_jsonl = gr.Textbox(
-                            label="JSONL records",
-                            lines=8,
-                            placeholder='{"id":"python_001","scenario":{...},"ground_truth":{...}}\n...',
-                        )
-                    bm_load_btn = gr.Button(
-                        "🔄 Load Dataset", variant="secondary", size="sm"
-                    )
-                    bm_records_info = gr.HTML(
-                        "<div style='color:#888;padding:10px;'>No dataset loaded yet.</div>",
-                        padding=True,
-                    )
-
-                    gr.Markdown("**🤖 Agent (OpenAI-compatible)**")
-                    bm_agent_url = gr.Textbox(
-                        label="Chat completions URL",
-                        placeholder="https://your-agent.example.com/v1/chat/completions",
-                    )
-                    bm_api_key = gr.Textbox(
-                        label="API Key (optional)",
-                        type="password",
-                        placeholder="Bearer xyz",
-                    )
-                    bm_model_name = gr.Textbox(
-                        label="Model name (optional, sent in body if provided)",
-                        placeholder="gpt-4o-mini",
-                    )
-
-                with gr.Column(scale=1):
-                    gr.Markdown("**⚙️ Eval settings**")
-                    bm_use_session = gr.Checkbox(label="📦 Session Level", value=True)
-                    bm_use_trace = gr.Checkbox(label="🔄 Trace Level", value=True)
-                    bm_use_span = gr.Checkbox(
-                        label="🔧 Span Level (tool calls)", value=True
-                    )
-                    bm_sel_session = gr.CheckboxGroup(
-                        choices=_SESS_CHOICES,
-                        value=SESSION_EVALUATORS,
-                        label="Session evaluators",
-                    )
-                    bm_sel_trace = gr.CheckboxGroup(
-                        choices=_TRACE_CHOICES,
-                        value=DEFAULT_TRACE_EVALS,
-                        label="Trace evaluators",
-                    )
-                    bm_sel_span = gr.CheckboxGroup(
-                        choices=_SPAN_CHOICES,
-                        value=SPAN_EVALUATORS,
-                        label="Span evaluators",
-                    )
-                    bm_threshold = gr.Slider(
-                        minimum=0.30,
-                        maximum=0.90,
-                        step=0.05,
-                        value=0.60,
-                        label="Pass threshold",
-                    )
-                    bm_run_btn = gr.Button(
-                        "🚀 Run Benchmark",
-                        variant="primary",
-                        size="lg",
-                        elem_id="run-btn",
-                    )
-
-            with gr.Row():
-                bm_results = gr.HTML(
-                    "<div style='color:#888;padding:30px;text-align:center;'>"
-                    "Load a dataset and click Run Benchmark to start.</div>",
-                    padding=True,
-                )
-
-            with gr.Row():
-                bm_log = gr.Textbox(
-                    label="Log", lines=10, interactive=False, buttons=["copy"]
-                )
-
-        # ── Tab 5: Generate Dataset ────────────────────────────────────────────
-        with gr.Tab("📦 Generate Dataset"):
-            gr.Markdown("### 📦 Generate a golden benchmark dataset")
-            gr.Markdown(
-                "Use an LLM to generate golden (input, expected_output) records "
-                "for evaluating AI tech interviewers across multiple domains."
-            )
-            gr.Markdown(
-                "> **Backend & model** configured in ⚙️ Configure → Save & Load Models before generating."
+                "Generate golden benchmark records using an LLM."
             )
 
             with gr.Row():
@@ -1347,83 +1090,146 @@ with gr.Blocks(
 
             with gr.Row():
                 gen_log = gr.Textbox(
-                    label="Log", lines=10, interactive=False, buttons=["copy"]
+                    label="Log", lines=5, interactive=False, buttons=["copy"]
                 )
-            gr.Markdown(_HOW_IT_WORKS)
-            gr.Markdown("""
-### Evaluator Reference
 
-| Evaluator | Level | Description |
-|-----------|-------|-------------|
-| **Goal Success Rate** | SESSION | Did the agent fully achieve the user's stated goal? |
-| **Helpfulness** | TRACE | Does the response help the user progress toward their goal? |
-| **Correctness** | TRACE | Is the response factually correct? (uses ground truth if provided) |
-| **Coherence** | TRACE | Is the reasoning logically consistent and well-structured? |
-| **Conciseness** | TRACE | Is the response appropriately brief without verbosity? |
-| **Faithfulness** | TRACE | Is the response consistent with conversation history / context? |
-| **Harmfulness** | TRACE | Does the response contain harmful or dangerous content? |
-| **Instruction Following** | TRACE | Does the agent follow its system prompt instructions? |
-| **Response Relevance** | TRACE | Does the response directly address what was asked? |
-| **Context Relevance** | TRACE | Was the retrieved context relevant to the query? (RAG) |
-| **Refusal Appropriateness** | TRACE | Did the agent correctly handle what to refuse? |
-| **Stereotyping / Bias** | TRACE | Is there stereotypical or demographic bias? |
-| **Tool Selection Accuracy** | SPAN | Did the agent choose the right tool? |
-| **Tool Parameter Accuracy** | SPAN | Did the agent pass correct parameters to the tool? |
+            gr.Markdown("---")
+            gr.Markdown("### Step 2 — Evaluation Settings")
 
-### Roadmap
-- [x] LLM-as-Judge mode (HuggingFace Inference API)
-- [ ] OpenAI-compatible API support
-- [x] pass@k / pass^k reliability metrics
-- [ ] Export results as JSON / CSV
-- [ ] Custom evaluator builder (prompt templates)
-- [x] Dataset management for regression testing (🧪 Benchmark tab)
-            """)
+            with gr.Accordion("🤖 Model Configuration", open=True):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("**LLM Judge Backend**")
+                        cfg_judge_mode = gr.Radio(
+                            choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen3 8B)"],
+                            value="LLM Judge (Local Qwen3 8B)",
+                            label="",
+                        )
+                        cfg_judge_hf_token = gr.Textbox(
+                            label="HF Token (for Inference API judge)",
+                            placeholder="hf_...",
+                            type="password",
+                            visible=False,
+                        )
+                        cfg_judge_mode.change(
+                            fn=lambda mode: gr.update(visible=(mode == "LLM Judge (Inference API)")),
+                            inputs=cfg_judge_mode,
+                            outputs=cfg_judge_hf_token,
+                        )
+                        gr.Markdown(
+                            "> Local judge auto-downloads **Qwen3-8B Q4_K_M** (~5GB) from "
+                            "[Qwen/Qwen3-8B-GGUF](https://huggingface.co/Qwen/Qwen3-8B-GGUF) on first use."
+                        )
 
-    # ── Wire: Benchmark ────────────────────────────────────────────────────────
-    def _preview_dataset(url, paste):
-        try:
-            if paste.strip():
-                records = parse_pasted_jsonl(paste)
-                src = "pasted JSONL"
-            else:
-                records = load_records_from_url(url.strip())
-                src = url.strip()
-            if not records:
-                return "<div style='color:#FF9800;padding:10px;'>⚠️ Loaded 0 records.</div>"
-            domains = sorted({r.get("domain", "") for r in records if r.get("domain")})
-            return (
-                f"<div style='color:#4CAF50;padding:10px;'>"
-                f"📂 {len(records)} records loaded from {src}"
-                f"<br><span style='color:#aaa;font-size:11px;'>"
-                f"Domains: {', '.join(domains)}</span></div>"
+                    with gr.Column(scale=1):
+                        gr.Markdown("**Dataset Generator Backend**")
+                        cfg_gen_backend = gr.Radio(
+                            choices=["Inference API", "llama.cpp"],
+                            value="llama.cpp",
+                            label="",
+                        )
+                        cfg_gen_hf_token = gr.Textbox(
+                            label="HF Token (for Inference API + upload)",
+                            placeholder="hf_...",
+                            type="password",
+                            visible=False,
+                        )
+                        def _toggle_gen_fields(backend):
+                            return gr.update(visible=(backend == "Inference API"))
+                        cfg_gen_backend.change(
+                            fn=_toggle_gen_fields,
+                            inputs=cfg_gen_backend,
+                            outputs=cfg_gen_hf_token,
+                        )
+
+                cfg_save_btn = gr.Button("💾 Save & Load Models", variant="primary", size="lg")
+                cfg_status = gr.HTML(
+                    "<div style='color:#888;padding:10px;text-align:center;'>"
+                    "Configure models above and click Save to load.</div>",
+                    padding=True,
+                )
+
+            gr.Markdown("**Evaluation Levels**")
+            with gr.Row():
+                use_session = gr.Checkbox(label="📦 Session Level", value=True)
+                use_trace = gr.Checkbox(label="🔄 Trace Level", value=True)
+                use_span = gr.Checkbox(
+                    label="🔧 Span Level (tool calls)", value=True
+                )
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("**📦 Session Evaluators** *(once per session)*")
+                    sel_session = gr.CheckboxGroup(
+                        choices=_SESS_CHOICES,
+                        value=SESSION_EVALUATORS,
+                        label="",
+                    )
+
+                    gr.Markdown("**🔄 Trace Evaluators** *(once per conversation turn)*")
+                    sel_trace = gr.CheckboxGroup(
+                        choices=_TRACE_CHOICES,
+                        value=DEFAULT_TRACE_EVALS,
+                        label="",
+                    )
+
+                    gr.Markdown("**🔧 Span Evaluators** *(once per tool call)*")
+                    sel_span = gr.CheckboxGroup(
+                        choices=_SPAN_CHOICES,
+                        value=SPAN_EVALUATORS,
+                        label="",
+                    )
+
+                with gr.Column(scale=1):
+                    gr.Markdown("**Settings**")
+                    threshold = gr.Slider(
+                        minimum=0.30, maximum=0.90, step=0.05, value=0.60,
+                        label="Minimum score to pass",
+                        info="Scores ≥ threshold are marked ✅ passed",
+                    )
+                    k_trials = gr.Slider(
+                        minimum=1, maximum=5, step=1, value=1,
+                        label="Trials (k)",
+                        info="k=1 → standard mode. k>1 → runs multiple trials, shows pass@k & pass^k.",
+                    )
+
+                    with gr.Accordion("📋 Ground Truth (Optional)", open=False):
+                        exp_response = gr.Textbox(
+                            label="Expected Response",
+                            placeholder="What should the final agent response look like?",
+                            lines=3,
+                        )
+                        exp_trajectory = gr.Textbox(
+                            label="Expected Tool Trajectory (comma-separated tool names)",
+                            placeholder="search_restaurants, create_reservation",
+                        )
+                        assertions_text = gr.Textbox(
+                            label="Assertions (one per line)",
+                            placeholder="A restaurant reservation was made\nConfirmation number was provided",
+                            lines=4,
+                        )
+
+            gr.Markdown("")
+            run_btn = gr.Button(
+                "▶ Run Evaluation", variant="primary", elem_id="run-btn", size="lg"
             )
-        except Exception as e:
-            return f"<div style='color:#F44336;padding:10px;'>❌ {e}</div>"
 
-    bm_load_btn.click(
-        _preview_dataset,
-        inputs=[bm_dataset_url, bm_paste_jsonl],
-        outputs=bm_records_info,
-    )
+        # ── Tab 3: Results ────────────────────────────────────────────────
+        with gr.Tab("📊 Results"):
+            overall_banner = gr.HTML(
+                "<div style='text-align:center;color:rgba(150,150,150,0.6);padding:40px;'>"
+                "← Configure and run evaluation to see results here</div>",
+                padding=True,
+            )
 
-    bm_run_btn.click(
-        fn=run_benchmark,
-        inputs=[
-            bm_dataset_url,
-            bm_paste_jsonl,
-            bm_agent_url,
-            bm_api_key,
-            bm_model_name,
-            bm_use_session,
-            bm_use_trace,
-            bm_use_span,
-            bm_sel_session,
-            bm_sel_trace,
-            bm_sel_span,
-            bm_threshold,
-        ],
-        outputs=[bm_results, bm_log],
-    )
+            with gr.Row():
+                radar_chart = gr.Plot(label="🕸️ Evaluator Scores (Radar)", scale=1)
+                bar_chart = gr.Plot(label="📊 Score Breakdown by Evaluator", scale=1)
+
+            heatmap_chart = gr.Plot(label="🗋️ Score Heatmap: Evaluators × Turns")
+
+            reliability_html = gr.HTML("", padding=True)
+            score_cards_html = gr.HTML("", padding=True)
 
     # ── Wire: Save Configuration ───────────────────────────────────────────────
     cfg_save_btn.click(
