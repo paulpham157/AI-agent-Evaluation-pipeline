@@ -940,7 +940,7 @@ with gr.Blocks(
                     gr.Markdown("**🤖 Evaluation Mode**")
                     eval_mode_radio = gr.Radio(
                         choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen3 8B)"],
-                        value="Heuristic (offline)",
+                        value="LLM Judge (Local Qwen3 8B)",
                         label="",
                     )
                     hf_token = gr.Textbox(
@@ -952,7 +952,7 @@ with gr.Blocks(
                     local_judge_path = gr.Textbox(
                         label="GGUF model path (for local judge)",
                         placeholder="/path/to/model.gguf  (leave empty for auto-download)",
-                        visible=False,
+                        visible=True,
                     )
                     def _toggle_judge_fields(mode):
                         is_inference = mode == "LLM Judge (Inference API)"
