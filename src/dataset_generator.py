@@ -632,10 +632,9 @@ def generate_dataset(
             repo = LLAMA_MODEL_REPO
         resolved_model = f"{repo}/{LLAMA_MODEL_FILE}" if "/" not in repo or "." not in repo else repo
         _log(f"🎯 {total} records  |  backend: llama.cpp  |  model: {resolved_model}")
-        from functools import partial
         if client is None:
             client = LlamaCppClient(model_repo=repo)
-        call_fn = partial(call_model_llamacpp, client=client, model_name=resolved_model)
+        call_fn = lambda t: call_model_llamacpp(client=client, template=t, model_name=resolved_model)
     else:
         resolved_model = model_name or GENERATOR_MODEL
         _log(f"🎯 {total} records  |  backend: Inference API  |  model: {resolved_model}")
