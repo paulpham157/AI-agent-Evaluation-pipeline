@@ -87,9 +87,9 @@ from src.visualizer import create_bar_chart, create_radar_chart, create_trace_ti
 # ─── App state: loaded models (lazy, only after user saves) ─────────────────
 
 _app_state = {
-    "judge_mode": "heuristic",
+    "judge_mode": "local",
     "judge": None,
-    "gen_backend": "inference",
+    "gen_backend": "llama-cpp",
     "gen_client": None,
     "gen_hf_token": None,
 }
@@ -125,7 +125,7 @@ def save_config(
     unload_models()
     status = []
     _app_state["judge_mode"] = "heuristic"
-    _app_state["gen_backend"] = "inference"
+    _app_state["gen_backend"] = "llama-cpp"
     _app_state["gen_hf_token"] = gen_hf_token.strip() or None
 
     # ── Load judge ─────────────────────────────────────────────────────
@@ -1082,13 +1082,14 @@ with gr.Blocks(
                     gr.Markdown("**📦 Dataset Generator Backend**")
                     cfg_gen_backend = gr.Radio(
                         choices=["Inference API", "llama.cpp"],
-                        value="Inference API",
+                        value="llama.cpp",
                         label="",
                     )
                     cfg_gen_hf_token = gr.Textbox(
                         label="HF Token (for Inference API + upload)",
                         placeholder="hf_...",
                         type="password",
+                        visible=False,
                     )
                     def _toggle_gen_fields(backend):
                         return gr.update(visible=(backend == "Inference API"))
