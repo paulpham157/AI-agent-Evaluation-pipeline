@@ -13,6 +13,7 @@ Run locally : python app.py
 HuggingFace : app_file = app.py  (Gradio SDK)
 """
 
+import gc
 import json
 import logging
 import os
@@ -81,6 +82,104 @@ from src.parser import format_trace_tree, parse_trace
 from src.reliability import compute_reliability
 from src.runner import EvalRunner
 from src.visualizer import create_bar_chart, create_radar_chart, create_trace_timeline
+
+# ─── App state: loaded models (lazy, only after user saves) ─────────────────
+
+_app_state = {
+    "judge_mode": "heuristic",
+    "judge": None,
+    "gen_backend": "inference",
+    "gen_client": None,
+    "gen_model": None,
+    "gen_hf_token": None,
+}
+
+
+def unload_models():
+    """Free GPU memory by deleting cached model instances."""
+    for key in ("judge", "gen_client"):
+        obj = _app_state.get(key)
+        if obj is not None:
+            try:
+                if hasattr(obj, "_llm") and obj._llm is not None:
+                    del obj._llm
+            except Exception:
+                pass
+    _app_state["judge"] = None
+    _app_state["gen_client"] = None
+    gc.collect()
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def save_config(
+    judge_mode: str,
+    hf_token: str,
+    local_judge_path: str,
+    gen_backend: str,
+    gen_model: str,
+    gen_hf_token: str,
+) -> str:
+    """Validate and load models per user selection. Returns status HTML."""
+    unload_models()
+    status = []
+    _app_state["judge_mode"] = "heuristic"
+    _app_state["gen_backend"] = "inference"
+    _app_state["gen_model"] = gen_model.strip() or None
+    _app_state["gen_hf_token"] = gen_hf_token.strip() or None
+
+    # ── Load judge ─────────────────────────────────────────────────────
+    if judge_mode == "LLM Judge (Inference API)":
+        token = hf_token.strip() or None
+        judge = LLMJudge(api_key=token)
+        if judge.available:
+            _app_state["judge"] = judge
+            _app_state["judge_mode"] = "inference"
+            status.append("✅ Judge: Inference API (no local model needed)")
+        else:
+            status.append("⚠️ Judge: Inference API — no HF token, will use heuristic")
+    elif judge_mode == "LLM Judge (Local Qwen3 8B)":
+        path = local_judge_path.strip() or None
+        judge = LocalQwenJudge(model_path=path)
+        judge._init_llm()
+        if judge.available:
+            _app_state["judge"] = judge
+            _app_state["judge_mode"] = "local"
+            status.append("✅ Judge: Local Qwen3 8B loaded")
+        else:
+            status.append("❌ Judge: Local Qwen3 8B failed to load — will use heuristic")
+    else:
+        status.append("✅ Judge: Heuristic (no model needed)")
+
+    # ── Load dataset generator ─────────────────────────────────────────
+    if gen_backend == "llama-cpp":
+        model = gen_model.strip() or None
+        from src.dataset_generator import LlamaCppClient
+        client = LlamaCppClient(model_repo=model) if model else LlamaCppClient()
+        try:
+            client._init_llm()
+            _app_state["gen_client"] = client
+            _app_state["gen_backend"] = "llama-cpp"
+            _app_state["gen_model"] = model
+            status.append("✅ Generator: llama.cpp model loaded")
+        except RuntimeError as e:
+            status.append(f"❌ Generator: llama.cpp not available — {e}")
+    else:
+        status.append("✅ Generator: Inference API (no local model needed)")
+
+    return _config_status_html(status)
+
+
+def _config_status_html(items: list[str]) -> str:
+    rows = "".join(
+        f"<div style='padding:4px 8px;font-size:13px;color:#ccc;'>{s}</div>"
+        for s in items
+    )
+    return f"<div style='background:rgba(255,255,255,0.05);border-radius:6px;padding:8px;'>{rows}</div>"
+
 
 # ─── Load demo traces ───────────────────────────────────────────────────────
 
@@ -245,33 +344,46 @@ def parse_and_preview(trace_json: str) -> str:
 def run_generate(
     domains: list,
     records_per_domain: int,
-    backend: str,
-    model_name: str,
     upload: bool,
-    hf_token: str,
     progress=gr.Progress(track_tqdm=True),
 ):
-    """Generate golden dataset records with UI progress."""
+    """Generate golden dataset records with UI progress.
+
+    Uses the backend and model pre-configured via ⚙️ Configure → Save.
+    """
     if not domains:
         yield "<div style='color:#F44336;'>❌ Select at least one domain.</div>", ""
         return
 
+    backend = _app_state["gen_backend"]
     log_lines = []
-    log_lines.append(f"🚀 Starting generation: {len(domains)} domains × {records_per_domain} records")
+    log_lines.append(
+        f"🚀 Starting generation: {len(domains)} domains × {records_per_domain} records"
+        f"  |  backend: {backend}"
+    )
 
     def progress_callback(current: int, total: int, msg: str):
         progress((current + 1) / total if total else 0, desc=f"Generating {msg}...")
 
-    # Delegate to shared generator — supports "inference" and "llama-cpp" backends
-    records, failed, log = generate_dataset(
+    kwargs = dict(
         domains=domains,
         records_per_domain=records_per_domain,
-        backend="inference" if backend == "Inference API" else "llama-cpp",
-        model_name=model_name.strip() or None,
         upload=upload,
-        hf_token=hf_token.strip() or None,
+        hf_token=_app_state.get("gen_hf_token"),
         progress_callback=progress_callback,
     )
+
+    if backend == "llama-cpp" and _app_state["gen_client"] is not None:
+        kwargs["client"] = _app_state["gen_client"]
+        kwargs["backend"] = "llama-cpp"
+        kwargs["model_name"] = _app_state["gen_model"]
+    elif backend == "inference":
+        kwargs["backend"] = "inference"
+        kwargs["model_name"] = _app_state["gen_model"]
+    else:
+        kwargs["backend"] = backend
+
+    records, failed, log = generate_dataset(**kwargs)
 
     log_lines.extend(log)
     passed = len(records) - len(failed)
@@ -684,19 +796,21 @@ def run_evaluation(
         warn = "<div style='color:#FF9800;padding:20px;'>⚠️ No evaluators selected — please enable at least one level.</div>"
         return warn, None, None, None, warn
 
-    # ── 4. Build LLM judge (if requested) ────────────────────────────────
+    # ── 4. Resolve LLM judge (pre-loaded from config, or lazy) ──────────
     use_llm = eval_mode_radio.startswith("LLM Judge")
     mode = EvalMode.LLM if use_llm else EvalMode.HEURISTIC
     judge = None
     if use_llm:
-        if eval_mode_radio == "LLM Judge (Inference API)":
+        # Use pre-loaded judge from config if available
+        if _app_state["judge"] is not None and _app_state["judge_mode"] != "heuristic":
+            judge = _app_state["judge"]
+        elif eval_mode_radio == "LLM Judge (Inference API)":
             token = hf_token.strip() or None
             judge = LLMJudge(api_key=token)
             if not judge.available:
                 warn = "<div style='color:#FF9800;padding:20px;'>⚠️ LLM Judge (Inference API) selected but no HF Token — falling back to heuristic.</div>"
                 mode = EvalMode.HEURISTIC
         else:
-            # Local judge via llama.cpp — auto-downloads Qwen3-8B GGUF if path is empty
             path = local_judge_path.strip() or None
             judge = LocalQwenJudge(model_path=path)
             if not judge.available:
@@ -928,7 +1042,70 @@ with gr.Blocks(
 
         # ── Tab 2: Configure ──────────────────────────────────────────────
         with gr.Tab("⚙️ Configure"):
-            gr.Markdown("### Step 2 — Choose evaluators and settings")
+            gr.Markdown("### Step 1 — Model Configuration")
+
+            with gr.Row():
+                with gr.Column(scale=1):
+                    gr.Markdown("**🤖 LLM Judge Backend**")
+                    cfg_judge_mode = gr.Radio(
+                        choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen3 8B)"],
+                        value="LLM Judge (Local Qwen3 8B)",
+                        label="",
+                    )
+                    cfg_judge_hf_token = gr.Textbox(
+                        label="HF Token (for Inference API judge)",
+                        placeholder="hf_...",
+                        type="password",
+                        visible=False,
+                    )
+                    cfg_judge_local_path = gr.Textbox(
+                        label="GGUF model path (for local judge)",
+                        placeholder="/path/to/model.gguf  (leave empty for auto-download)",
+                        visible=True,
+                    )
+                    def _toggle_judge_fields(mode):
+                        is_inference = mode == "LLM Judge (Inference API)"
+                        is_local = mode == "LLM Judge (Local Qwen3 8B)"
+                        return gr.update(visible=is_inference), gr.update(visible=is_local)
+                    cfg_judge_mode.change(
+                        fn=_toggle_judge_fields,
+                        inputs=cfg_judge_mode,
+                        outputs=[cfg_judge_hf_token, cfg_judge_local_path],
+                    )
+
+                with gr.Column(scale=1):
+                    gr.Markdown("**📦 Dataset Generator Backend**")
+                    cfg_gen_backend = gr.Radio(
+                        choices=["Inference API", "llama.cpp"],
+                        value="Inference API",
+                        label="",
+                    )
+                    cfg_gen_model = gr.Textbox(
+                        label="Model (optional override)",
+                        placeholder="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+                    )
+                    cfg_gen_hf_token = gr.Textbox(
+                        label="HF Token (for Inference API + upload)",
+                        placeholder="hf_...",
+                        type="password",
+                    )
+                    def _toggle_gen_fields(backend):
+                        return gr.update(visible=(backend == "Inference API"))
+                    cfg_gen_backend.change(
+                        fn=_toggle_gen_fields,
+                        inputs=cfg_gen_backend,
+                        outputs=cfg_gen_hf_token,
+                    )
+
+            cfg_save_btn = gr.Button("💾 Save & Load Models", variant="primary", size="lg")
+            cfg_status = gr.HTML(
+                "<div style='color:#888;padding:10px;text-align:center;'>"
+                "Configure models above and click Save to load.</div>",
+                padding=True,
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### Step 2 — Evaluator Selection & Settings")
 
             with gr.Row():
                 with gr.Column(scale=1):
@@ -937,34 +1114,6 @@ with gr.Blocks(
                     use_trace = gr.Checkbox(label="🔄 Trace Level", value=True)
                     use_span = gr.Checkbox(
                         label="🔧 Span Level (tool calls)", value=True
-                    )
-
-                    gr.Markdown("**🤖 Evaluation Mode**")
-                    eval_mode_radio = gr.Radio(
-                        choices=["Heuristic (offline)", "LLM Judge (Inference API)", "LLM Judge (Local Qwen3 8B)"],
-                        value="LLM Judge (Local Qwen3 8B)",
-                        label="",
-                    )
-                    hf_token = gr.Textbox(
-                        label="HF Token (for Inference API judge)",
-                        placeholder="hf_...",
-                        type="password",
-                        visible=False,
-                    )
-                    local_judge_path = gr.Textbox(
-                        label="GGUF model path (for local judge)",
-                        placeholder="/path/to/model.gguf  (leave empty for auto-download)",
-                        visible=True,
-                    )
-                    def _toggle_judge_fields(mode):
-                        """Show HF token for Inference API, model path for local judge."""
-                        is_inference = mode == "LLM Judge (Inference API)"
-                        is_local = mode == "LLM Judge (Local Qwen3 8B)"
-                        return gr.update(visible=is_inference), gr.update(visible=is_local)
-                    eval_mode_radio.change(
-                        fn=_toggle_judge_fields,
-                        inputs=eval_mode_radio,
-                        outputs=[hf_token, local_judge_path],
                     )
 
                     gr.Markdown("**Pass Threshold**")
@@ -1159,36 +1308,16 @@ with gr.Blocks(
                 "Use an LLM to generate golden (input, expected_output) records "
                 "for evaluating AI tech interviewers across multiple domains."
             )
+            gr.Markdown(
+                "> **Backend & model** configured in ⚙️ Configure → Save & Load Models before generating."
+            )
 
             with gr.Row():
                 with gr.Column(scale=1):
-                    gr.Markdown("**🤖 Backend**")
-                    gen_backend = gr.Radio(
-                        choices=["Inference API", "llama.cpp"],
-                        value="Inference API",
-                        label="",
-                        info="Inference API (no GPU needed)  ·  llama.cpp (local GPU via llama-cpp-python)",
-                    )
-                    gen_hf_token = gr.Textbox(
-                        label="HF Token (for Inference API + upload)",
-                        placeholder="hf_...",
-                        type="password",
-                        visible=True,
-                    )
-                    gen_backend.change(
-                        fn=lambda b: gr.update(visible=(b == "Inference API")),
-                        inputs=gen_backend,
-                        outputs=gen_hf_token,
-                    )
-
                     gr.Markdown("**📐 Settings**")
                     gen_records = gr.Slider(
                         minimum=1, maximum=5, step=1, value=3,
                         label="Records per domain",
-                    )
-                    gen_model = gr.Textbox(
-                        label="Model (optional override)",
-                        placeholder="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
                     )
                     gen_upload = gr.Checkbox(
                         label="Upload to HF dataset repo after generation",
@@ -1294,16 +1423,27 @@ with gr.Blocks(
         outputs=[bm_results, bm_log],
     )
 
+    # ── Wire: Save Configuration ───────────────────────────────────────────────
+    cfg_save_btn.click(
+        fn=save_config,
+        inputs=[
+            cfg_judge_mode,
+            cfg_judge_hf_token,
+            cfg_judge_local_path,
+            cfg_gen_backend,
+            cfg_gen_model,
+            cfg_gen_hf_token,
+        ],
+        outputs=cfg_status,
+    )
+
     # ── Wire: Generate Dataset ──────────────────────────────────────────────────
     gen_run_btn.click(
         fn=run_generate,
         inputs=[
             gen_domains,
             gen_records,
-            gen_backend,
-            gen_model,
             gen_upload,
-            gen_hf_token,
         ],
         outputs=[gen_result, gen_log],
     )
@@ -1321,9 +1461,9 @@ with gr.Blocks(
             sel_span,
             threshold,
             k_trials,
-            eval_mode_radio,
-            hf_token,
-            local_judge_path,
+            cfg_judge_mode,
+            cfg_judge_hf_token,
+            cfg_judge_local_path,
             exp_response,
             exp_trajectory,
             assertions_text,

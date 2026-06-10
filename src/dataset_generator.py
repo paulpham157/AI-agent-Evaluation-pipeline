@@ -587,6 +587,7 @@ def generate_dataset(
     records_per_domain: int,
     backend: str = "inference",
     model_name: str = None,
+    client: LlamaCppClient = None,
     output_path: str = None,
     upload: bool = False,
     hf_token: str = None,
@@ -600,6 +601,7 @@ def generate_dataset(
     records_per_domain : int.
     backend : "inference" | "llama-cpp".
     model_name : override model name (repo_id for inference, repo for llama-cpp).
+    client : pre-loaded LlamaCppClient (if None, a new one is created lazily).
     output_path : path to save JSONL.
     upload : upload to HF dataset repo after generation.
     hf_token : HF token for Inference API / upload.
@@ -631,8 +633,9 @@ def generate_dataset(
         resolved_model = f"{repo}/{LLAMA_MODEL_FILE}" if "/" not in repo or "." not in repo else repo
         _log(f"🎯 {total} records  |  backend: llama.cpp  |  model: {resolved_model}")
         from functools import partial
-        client = LlamaCppClient(model_repo=repo)
-        call_fn = partial(call_model_llamacpp, model_name=resolved_model)
+        if client is None:
+            client = LlamaCppClient(model_repo=repo)
+        call_fn = partial(call_model_llamacpp, client=client, model_name=resolved_model)
     else:
         resolved_model = model_name or GENERATOR_MODEL
         _log(f"🎯 {total} records  |  backend: Inference API  |  model: {resolved_model}")
