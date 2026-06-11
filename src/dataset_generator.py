@@ -487,6 +487,8 @@ class LlamaCppClient:
 # ─── Backend callers ────────────────────────────────────────────────
 
 
+_LAST_FAILURE = []
+
 def call_model_llamacpp(client: LlamaCppClient, template: dict, model_name: str = None) -> Optional[dict]:
     """Call model via local llama.cpp."""
     if model_name is None:
@@ -506,10 +508,11 @@ def call_model_llamacpp(client: LlamaCppClient, template: dict, model_name: str 
         raw = resp.choices[0].message.content or ""
         data = parse_output(raw)
         if not data or not validate(data):
-            print(f"[DEBUG-llamacpp] {template['id']}: parse failed, raw ({len(raw)} chars): {raw[:1500]!r}")
+            _LAST_FAILURE.append(raw[:2000])
             return None
         return _build_result(template, data, model_name=model_name)
     except Exception as e:
+        _LAST_FAILURE.append(f"[EXC] {type(e).__name__}: {e}")
         logger.warning("llama.cpp call failed for %s: %s", template["id"], e)
         return None
 
@@ -673,7 +676,11 @@ def generate_dataset(
                 _log("✓")
             else:
                 failed.append(t["id"])
-                _log("✗ parse failed")
+                if _LAST_FAILURE:
+                    _log(f"✗ parse failed: {_LAST_FAILURE[-1][:200]}")
+                    _LAST_FAILURE.clear()
+                else:
+                    _log("✗ parse failed")
             time.sleep(0.4)
 
     _log(f"✅ {len(records)} generated  |  ✗ {len(failed)} failed")
