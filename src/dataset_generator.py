@@ -422,9 +422,17 @@ class LlamaCppClient:
         if self._llm is not None:
             return
         try:
-            from llama_cpp import Llama
-        except ImportError as e:
-            raise RuntimeError("llama-cpp-python not installed. Install with: pip install llama-cpp-python") from e
+            import llama_cpp  # noqa: F401
+        except ImportError:
+            import subprocess
+            import sys
+            logger.info("llama-cpp-python not found — installing (may take 2-3 min)…")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "llama-cpp-python>=0.3.0"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        from llama_cpp import Llama
 
         from huggingface_hub import hf_hub_download
 
