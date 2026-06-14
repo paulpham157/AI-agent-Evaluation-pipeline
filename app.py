@@ -142,9 +142,10 @@ def save_config(
         try:
             import llama_cpp  # noqa: F401
         except ImportError:
-            status.append("⏳ Installing llama-cpp-python (compiling may take 2–3 min)…")
+            from src.dataset_generator import LLAMA_CPP_WHEEL_URL
+            status.append("⏳ Installing llama-cpp-python (pre-built wheel)…")
             subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "llama-cpp-python>=0.3.0"],
+                [sys.executable, "-m", "pip", "install", LLAMA_CPP_WHEEL_URL],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -166,9 +167,10 @@ def save_config(
         try:
             import llama_cpp  # noqa: F401
         except ImportError:
-            status.append("⏳ Installing llama-cpp-python (compiling may take 2–3 min)…")
+            from src.dataset_generator import LLAMA_CPP_WHEEL_URL
+            status.append("⏳ Installing llama-cpp-python (pre-built wheel)…")
             subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "llama-cpp-python>=0.3.0"],
+                [sys.executable, "-m", "pip", "install", LLAMA_CPP_WHEEL_URL],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )

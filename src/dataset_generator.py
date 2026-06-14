@@ -29,6 +29,15 @@ LLAMA_MODEL_FILE = os.getenv("LLAMA_MODEL_FILE", "NVIDIA-Nemotron3-Nano-4B-Q4_K_
 LLAMA_N_CTX = int(os.getenv("LLAMA_N_CTX", "16384"))
 LLAMA_N_GPU_LAYERS = int(os.getenv("LLAMA_N_GPU_LAYERS", "-1"))
 LLAMA_N_BATCH = int(os.getenv("LLAMA_N_BATCH", "512"))
+LLAMA_CPP_WHEEL_VERSION = os.getenv("LLAMA_CPP_WHEEL_VERSION", "0.3.29")
+LLAMA_CPP_CUDA_TAG = os.getenv("LLAMA_CPP_CUDA_TAG", "cu124")
+
+LLAMA_CPP_WHEEL_URL = (
+    f"https://github.com/abetlen/llama-cpp-python/releases/download/"
+    f"v{LLAMA_CPP_WHEEL_VERSION}-{LLAMA_CPP_CUDA_TAG}/"
+    f"llama_cpp_python-{LLAMA_CPP_WHEEL_VERSION}-"
+    f"py3-none-manylinux_2_35_x86_64.whl"
+)
 
 GENERATOR_MODEL = os.getenv("GENERATOR_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16")
 
@@ -426,9 +435,9 @@ class LlamaCppClient:
         except ImportError:
             import subprocess
             import sys
-            logger.info("llama-cpp-python not found — installing (may take 2-3 min)…")
+            logger.info("llama-cpp-python not found — installing pre-built wheel…")
             subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "llama-cpp-python>=0.3.0"],
+                [sys.executable, "-m", "pip", "install", LLAMA_CPP_WHEEL_URL],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
