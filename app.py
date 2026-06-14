@@ -376,6 +376,20 @@ def run_generate(
         f"  |  backend: {backend}"
     )
 
+    try:
+        for chunk in _run_generate_impl(domains, records_per_domain, upload, backend, log_lines, progress):
+            yield chunk
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        log_lines.append(f"❌ **Error:** `{e}`")
+        for line in tb.split("\n")[-10:]:
+            log_lines.append(f"  `{line.strip()}`")
+        yield f"<div style='color:#F44336;padding:16px;'>❌ Generation failed: <code>{e}</code></div>", "\n".join(log_lines)
+
+
+def _run_generate_impl(domains, records_per_domain, upload, backend, log_lines, progress):
+    """Inner implementation of run_generate, wrapped so exceptions show in UI."""
     def progress_callback(current: int, total: int, msg: str):
         progress((current + 1) / total if total else 0, desc=f"Generating {msg}...")
 
